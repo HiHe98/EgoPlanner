@@ -104,6 +104,8 @@ namespace ego_planner
       ros::Duration(0.001).sleep();
       visualization_->displayGlobalPathList(gloabl_traj, 0.1, 0);
       ros::Duration(0.001).sleep();
+      /* >>> 新增：把终点高度设为当前飞行层 <<< */
+      planner_manager_->grid_map_->setFlyHeight(end_pt_(2));
     }
     else
     {
@@ -154,6 +156,8 @@ namespace ego_planner
 
       // visualization_->displayGoalPoint(end_pt_, Eigen::Vector4d(1, 0, 0, 1), 0.3, 0);
       visualization_->displayGlobalPathList(gloabl_traj, 0.1, 0);
+      /* >>> 新增：把终点高度设为当前飞行层 <<< */
+      planner_manager_->grid_map_->setFlyHeight(end_pt_(2));
     }
     else
     {

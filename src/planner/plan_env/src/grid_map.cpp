@@ -754,7 +754,11 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
   Eigen::Vector3d p3d, p3d_inf;
 
   int inf_step = ceil(mp_.obstacles_inflation_ / mp_.resolution_);
-  int inf_step_z = 1;
+  //三维膨胀
+  // int inf_step_z = 1;
+  double fly_height   = mp_.fly_height_;   // 运行时目标高度
+  double layer_half   = 0.15;              // 单层厚度 0.3 m 的一半
+  int inf_step_z = 0;
 
   double max_x, max_y, max_z, min_x, min_y, min_z;
 
@@ -769,7 +773,8 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
   for (size_t i = 0; i < latest_cloud.points.size(); ++i)
   {
     pt = latest_cloud.points[i];
-    p3d(0) = pt.x, p3d(1) = pt.y, p3d(2) = pt.z;
+    pt.z = fly_height;                          // 压扁到飞行层
+    p3d(0) = pt.x, p3d(1) = pt.y, p3d(2) = pt.z; // 用已压扁的z
 
     /* point inside update range */
     Eigen::Vector3d devi = p3d - md_.camera_pos_;
@@ -822,6 +827,21 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
   posToIndex(Eigen::Vector3d(max_x, max_y, max_z), md_.local_bound_max_);
   posToIndex(Eigen::Vector3d(min_x, min_y, min_z), md_.local_bound_min_);
 
+  /* 把 fly_height ± layer_half 以外全部标占据 */
+  for (double z = mp_.map_min_boundary_(2); z <= mp_.map_max_boundary_(2); z += mp_.resolution_)
+  {
+    if (z < fly_height - layer_half || z > fly_height + layer_half)
+    {
+      for (int x = md_.local_bound_min_(0); x <= md_.local_bound_max_(0); ++x)
+        for (int y = md_.local_bound_min_(1); y <= md_.local_bound_max_(1); ++y)
+        {
+          Eigen::Vector3i idx;
+          idx << x, y, int(z / mp_.resolution_);
+          if (isInMap(idx))
+            md_.occupancy_buffer_inflate_[toAddress(idx)] = 1;
+        }
+    }
+  }
   boundIndex(md_.local_bound_min_);
   boundIndex(md_.local_bound_max_);
 }

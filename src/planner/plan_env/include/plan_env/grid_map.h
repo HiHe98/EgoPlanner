@@ -75,7 +75,7 @@ struct MappingParameters {
   int local_map_margin_;
 
   /* visualization and computation time display */
-  double visualization_truncate_height_, virtual_ceil_height_, ground_height_;
+  double visualization_truncate_height_, virtual_ceil_height_, ground_height_,fly_height_;
   bool show_occ_time_;
 
   /* active mapping */
@@ -180,7 +180,7 @@ public:
   typedef std::shared_ptr<GridMap> Ptr;
 
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-
+  void setFlyHeight(double h) { mp_.fly_height_ = h; }   // 实时更新飞行层
 private:
   MappingParameters mp_;
   MappingData md_;
