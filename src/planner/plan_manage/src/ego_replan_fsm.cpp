@@ -62,13 +62,15 @@ namespace ego_planner
   void EGOReplanFSM::planGlobalTrajbyGivenWps()
   {
     std::vector<Eigen::Vector3d> wps(waypoint_num_);
+    /* >>> 新增：把所有航点压到当前飞行层 <<< */
+    double fly_height = planner_manager_->grid_map_->getFlyHeight();
     for (int i = 0; i < waypoint_num_; i++)
     {
-      wps[i](0) = waypoints_[i][0];
-      wps[i](1) = waypoints_[i][1];
-      wps[i](2) = waypoints_[i][2];
-
-      end_pt_ = wps.back();
+    wps[i](0) = waypoints_[i][0];
+    wps[i](1) = waypoints_[i][2];
+    wps[i](0) = waypoints_[i][0];
+    wps[i](1) = waypoints_[i][1];
+    wps[i](2) = fly_height;   // 与当前飞行层同高
     }
     bool success = planner_manager_->planGlobalTrajWaypoints(odom_pos_, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), wps, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
     
@@ -105,7 +107,7 @@ namespace ego_planner
       visualization_->displayGlobalPathList(gloabl_traj, 0.1, 0);
       ros::Duration(0.001).sleep();
       /* >>> 新增：把终点高度设为当前飞行层 <<< */
-      planner_manager_->grid_map_->setFlyHeight(end_pt_(2));
+      planner_manager_->grid_map_->setFlyHeight(fly_height);
     }
     else
     {
@@ -127,7 +129,12 @@ namespace ego_planner
     init_pt_ = odom_pos_;
 
     bool success = false;
-    end_pt_ << msg->poses[0].pose.position.x, msg->poses[0].pose.position.y, 1.0;
+     /* >>> 新增：把当前飞机高度当成飞行层 <<< */
+    double fly_height = planner_manager_->grid_map_->getCameraPos()(2);   // 当前雷达高度 = 当前飞机高度
+    ROS_WARN("[SET] fly_height = %.3f", fly_height);  // 打印有效高度
+    end_pt_ << msg->poses[0].pose.position.x,
+            msg->poses[0].pose.position.y,
+            fly_height;   // 与当前飞机同高
     success = planner_manager_->planGlobalTraj(odom_pos_, odom_vel_, Eigen::Vector3d::Zero(), end_pt_, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
     ROS_WARN("[planGlobalTraj] success=%d  new_duration=%.3f", success, planner_manager_->global_data_.global_duration_);
     visualization_->displayGoalPoint(end_pt_, Eigen::Vector4d(0, 0.5, 0.5, 1), 0.3, 0);
@@ -157,7 +164,7 @@ namespace ego_planner
       // visualization_->displayGoalPoint(end_pt_, Eigen::Vector4d(1, 0, 0, 1), 0.3, 0);
       visualization_->displayGlobalPathList(gloabl_traj, 0.1, 0);
       /* >>> 新增：把终点高度设为当前飞行层 <<< */
-      planner_manager_->grid_map_->setFlyHeight(end_pt_(2));
+      planner_manager_->grid_map_->setFlyHeight(fly_height);
     }
     else
     {

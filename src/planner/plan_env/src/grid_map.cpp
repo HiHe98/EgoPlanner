@@ -717,19 +717,34 @@ void GridMap::depthPoseCallback(const sensor_msgs::ImageConstPtr &img,
 }
 void GridMap::odomCallback(const nav_msgs::OdometryConstPtr &odom)
 {
-  if (md_.has_first_depth_)
-    return;
+  /* 1. 静态计数器：第一次进来为 0，之后每触发一次 +1 */
+  static int index = 0;
 
+  /* 2. 打印本次序号 + 原始 z 值（无论后续是否 return 都能看到） */
+  // ROS_WARN("[idx=%d] odom->pose.pose.position.z = %.3f", index, odom->pose.pose.position.z);
+
+  /* 3. 如果已经拿到深度图，直接返回，但序号已经打印，可区分 */
+  if (md_.has_first_depth_) {
+    ++index;          // 别忘了累加，否则下次序号会重复
+    return;
+  }
+
+  /* 4. 真正赋值 */
   md_.camera_pos_(0) = odom->pose.pose.position.x;
   md_.camera_pos_(1) = odom->pose.pose.position.y;
   md_.camera_pos_(2) = odom->pose.pose.position.z;
 
+  // ROS_WARN("[idx=%d] md_.camera_pos_(2) = %.3f", index, md_.camera_pos_(2));
   md_.has_odom_ = true;
+
+  ++index;   // 为下一次回调准备
 }
 
 void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
 {
-
+  static int index=0;
+  ROS_WARN("[idx=%d] ", index);
+  ++index;
   pcl::PointCloud<pcl::PointXYZ> latest_cloud;
   pcl::fromROSMsg(*img, latest_cloud);
 
@@ -741,10 +756,17 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
     return;
   }
 
-  if (latest_cloud.points.size() == 0)
-    return;
-
+    // >>> 新增：检查里程计位置有效性（避免NaN） <<<
   if (isnan(md_.camera_pos_(0)) || isnan(md_.camera_pos_(1)) || isnan(md_.camera_pos_(2)))
+  {
+    ROS_WARN("[cloudCB] Invalid odom position (contains NaN), skip cloud update.");
+    return;
+  }
+  // >>> 新增：从里程计获取飞机当前高度作为飞行层 <<<
+  double current_fly_height = md_.camera_pos_(2);  // 核心：实时读取当前高度
+  ROS_DEBUG("[cloudCB] Current fly height: %.3f m", current_fly_height);  // 调试日志
+
+  if (latest_cloud.points.size() == 0)
     return;
 
   this->resetBuffer(md_.camera_pos_ - mp_.local_update_range_,
@@ -756,7 +778,6 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
   int inf_step = ceil(mp_.obstacles_inflation_ / mp_.resolution_);
   //三维膨胀
   // int inf_step_z = 1;
-  double fly_height   = mp_.fly_height_;   // 运行时目标高度
   double layer_half   = 0.15;              // 单层厚度 0.3 m 的一半
   int inf_step_z = 0;
 
@@ -773,9 +794,8 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
   for (size_t i = 0; i < latest_cloud.points.size(); ++i)
   {
     pt = latest_cloud.points[i];
-    pt.z = fly_height;                          // 压扁到飞行层
     p3d(0) = pt.x, p3d(1) = pt.y, p3d(2) = pt.z; // 用已压扁的z
-
+    
     /* point inside update range */
     Eigen::Vector3d devi = p3d - md_.camera_pos_;
     Eigen::Vector3i inf_pt;
@@ -793,7 +813,8 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
             p3d_inf(0) = pt.x + x * mp_.resolution_;
             p3d_inf(1) = pt.y + y * mp_.resolution_;
             p3d_inf(2) = pt.z + z * mp_.resolution_;
-
+            // 修改后（打印实时高度）：
+            ROS_INFO("[cloudCB] current_fly_height = %.3f, pt.z = %.3f", current_fly_height, pt.z);
             max_x = max(max_x, p3d_inf(0));
             max_y = max(max_y, p3d_inf(1));
             max_z = max(max_z, p3d_inf(2));
@@ -830,7 +851,7 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
   /* 把 fly_height ± layer_half 以外全部标占据 */
   for (double z = mp_.map_min_boundary_(2); z <= mp_.map_max_boundary_(2); z += mp_.resolution_)
   {
-    if (z < fly_height - layer_half || z > fly_height + layer_half)
+    if (z < current_fly_height - layer_half || z > current_fly_height + layer_half)
     {
       for (int x = md_.local_bound_min_(0); x <= md_.local_bound_max_(0); ++x)
         for (int y = md_.local_bound_min_(1); y <= md_.local_bound_max_(1); ++y)

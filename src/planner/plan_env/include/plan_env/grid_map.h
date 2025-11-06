@@ -181,6 +181,9 @@ public:
 
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
   void setFlyHeight(double h) { mp_.fly_height_ = h; }   // 实时更新飞行层
+  double getFlyHeight() const { return mp_.fly_height_; }
+  Eigen::Vector3d getCameraPos() const { return md_.camera_pos_; }  // 提供相机位置访问接口
+
 private:
   MappingParameters mp_;
   MappingData md_;
