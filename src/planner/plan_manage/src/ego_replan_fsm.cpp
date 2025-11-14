@@ -45,7 +45,7 @@ namespace ego_planner
     data_disp_pub_ = nh.advertise<ego_planner::DataDisp>("/planning/data_display", 100);
     pub_finish_event = nh.advertise<std_msgs::Empty>("/ego_planner/finish_event", 1, true);
     wp_single_sub_ = nh.subscribe<geometry_msgs::PoseStamped>(
-        "/move_base_simple/goal", 1, &EGOReplanFSM::singleGoalCallback, this);
+        "/move_base_simple/goal2", 1, &EGOReplanFSM::singleGoalCallback, this);
     if (target_type_ == TARGET_TYPE::MANUAL_TARGET)
       waypoint_sub_ = nh.subscribe("/waypoint_generator/waypoints", 1, &EGOReplanFSM::waypointCallback, this);
     else if (target_type_ == TARGET_TYPE::PRESET_TARGET)
@@ -124,35 +124,51 @@ namespace ego_planner
     trigger_ = true;
     init_pt_ = odom_pos_;
 
-    bool success = false;
-    end_pt_ << msg->poses[0].pose.position.x, msg->poses[0].pose.position.y, 1.0;
-    success = planner_manager_->planGlobalTraj(odom_pos_, odom_vel_, Eigen::Vector3d::Zero(), end_pt_, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
-    ROS_WARN("[planGlobalTraj] success=%d  new_duration=%.3f", success, planner_manager_->global_data_.global_duration_);
+    // 1. 强制目标点Z坐标与无人机当前高度一致（固定在XY平面）
+    double fixed_z = odom_pos_.z(); // 取无人机当前Z坐标作为固定高度
+    end_pt_ << msg->poses[0].pose.position.x, 
+              msg->poses[0].pose.position.y, 
+              fixed_z; // 替换硬编码的1.0，确保与当前高度一致
+
+    // 规划全局路径（此时planGlobalTraj已修改为固定Z轴）
+    bool success = planner_manager_->planGlobalTraj(
+        odom_pos_, 
+        odom_vel_, 
+        Eigen::Vector3d::Zero(), 
+        end_pt_, 
+        Eigen::Vector3d::Zero(),  // 目标速度Z分量为0
+        Eigen::Vector3d::Zero()   // 目标加速度Z分量为0
+    );
+    ROS_WARN("[planGlobalTraj] success=%d  new_duration=%.3f", 
+            success, 
+            planner_manager_->global_data_.global_duration_);
+
+    // 2. 可视化目标点时，Z坐标同样固定为fixed_z
     visualization_->displayGoalPoint(end_pt_, Eigen::Vector4d(0, 0.5, 0.5, 1), 0.3, 0);
 
     if (success)
     {
-
-      /*** display ***/
+      /*** 全局路径可视化：确保所有采样点Z坐标固定 ***/
       constexpr double step_size_t = 0.1;
       int i_end = floor(planner_manager_->global_data_.global_duration_ / step_size_t);
       vector<Eigen::Vector3d> gloabl_traj(i_end);
       for (int i = 0; i < i_end; i++)
       {
-        gloabl_traj[i] = planner_manager_->global_data_.global_traj_.evaluate(i * step_size_t);
+        Eigen::Vector3d traj_pt = planner_manager_->global_data_.global_traj_.evaluate(i * step_size_t);
+        traj_pt.z() = fixed_z; // 再次强制可视化的轨迹点Z坐标固定（双重保险）
+        gloabl_traj[i] = traj_pt;
       }
 
       end_vel_.setZero();
       have_target_ = true;
       have_new_target_ = true;
 
-      /*** FSM ***/
+      /*** 状态机切换 ***/
       if (exec_state_ == WAIT_TARGET)
         changeFSMExecState(GEN_NEW_TRAJ, "TRIG");
       else if (exec_state_ == EXEC_TRAJ)
         changeFSMExecState(REPLAN_TRAJ, "TRIG");
 
-      // visualization_->displayGoalPoint(end_pt_, Eigen::Vector4d(1, 0, 0, 1), 0.3, 0);
       visualization_->displayGlobalPathList(gloabl_traj, 0.1, 0);
     }
     else
@@ -435,27 +451,52 @@ namespace ego_planner
 
   bool EGOReplanFSM::callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj)
   {
-
     getLocalTarget();
-    bool close_reason = false;   // ��ʱ����
-    bool plan_success =
-        planner_manager_->reboundReplan(start_pt_, start_vel_, start_acc_, local_target_pt_, local_target_vel_, (have_new_target_ || flag_use_poly_init), flag_randomPolyTraj, close_reason);
+
+    // 强制局部目标点Z坐标与起点一致
+    double fixed_z = start_pt_.z();
+    local_target_pt_.z() = fixed_z;
+    local_target_vel_.z() = 0.0;
+
+    // 调用局部规划器
+    bool close_reason = false;
+    bool plan_success = planner_manager_->reboundReplan(
+        start_pt_,
+        start_vel_,
+        start_acc_,
+        local_target_pt_,
+        local_target_vel_,
+        (have_new_target_ || flag_use_poly_init),
+        flag_randomPolyTraj,
+        close_reason
+    );
     have_new_target_ = false;
 
     cout << "final_plan_success=" << plan_success << endl;
 
     if (plan_success)
     {
-
       auto info = &planner_manager_->local_data_;
 
-      /* publish traj */
+      /* 修正轨迹控制点的Z坐标 */
+      Eigen::MatrixXd pos_pts = info->position_traj_.getControlPoint();
+      for (int i = 0; i < pos_pts.cols(); ++i) {
+        pos_pts(2, i) = fixed_z;
+      }
+
+      // 计算时间间隔ts（替代 getTs()）
+      Eigen::VectorXd knots = info->position_traj_.getKnot();
+      double ts = knots(1) - knots(0); // 均匀B样条的knot间隔相等
+
+      // 重新构造轨迹对象
+      info->position_traj_ = UniformBspline(pos_pts, 3, ts);
+
+      /* 发布轨迹 */
       ego_planner::Bspline bspline;
       bspline.order = 3;
       bspline.start_time = info->start_time_;
       bspline.traj_id = info->traj_id_;
 
-      Eigen::MatrixXd pos_pts = info->position_traj_.getControlPoint();
       bspline.pos_pts.reserve(pos_pts.cols());
       for (int i = 0; i < pos_pts.cols(); ++i)
       {
@@ -466,7 +507,6 @@ namespace ego_planner
         bspline.pos_pts.push_back(pt);
       }
 
-      Eigen::VectorXd knots = info->position_traj_.getKnot();
       bspline.knots.reserve(knots.rows());
       for (int i = 0; i < knots.rows(); ++i)
       {
@@ -475,9 +515,9 @@ namespace ego_planner
 
       bspline_pub_.publish(bspline);
 
-      visualization_->displayOptimalList(info->position_traj_.get_control_points(), 0);
+      visualization_->displayOptimalList(info->position_traj_.getControlPoint(), 0);
     }
-    else if (close_reason) {   // ��������Ŀ��
+    else if (close_reason) {
         ROS_WARN("[FSM] reboundReplan failed due to CLOSE_TO_GOAL");
         std_msgs::Empty e;
         pub_finish_event.publish(e);
@@ -523,53 +563,62 @@ namespace ego_planner
 
   void EGOReplanFSM::getLocalTarget()
   {
-    double t;
+    // 1. 初始化全局路径时间参数（确保为轨迹时间，而非系统时间）
+    double global_duration = planner_manager_->global_data_.global_duration_;
+    double last_progress = planner_manager_->global_data_.last_progress_time_;
 
-    double t_step = planning_horizen_ / 20 / planner_manager_->pp_.max_vel_;
-    double dist_min = 9999, dist_min_t = 0.0;
-    for (t = planner_manager_->global_data_.last_progress_time_; t < planner_manager_->global_data_.global_duration_; t += t_step)
-    {
+    // 安全检查：若last_progress未初始化或超出轨迹时长，强制重置为0
+    if (last_progress < 0 || last_progress > global_duration + 1e-5) {
+      last_progress = 0.0;
+      planner_manager_->global_data_.last_progress_time_ = last_progress;
+      ROS_WARN("Reset last_progress_time_ to 0 (invalid value: %.3f)", last_progress);
+    }
+
+    double t_step = planning_horizen_ / 20 / planner_manager_->pp_.max_vel_; // 采样步长
+    double dist_min = 9999.0;
+    double dist_min_t = last_progress; // 初始最小距离时间为上次进度
+
+    // 2. 遍历全局路径，寻找局部目标点（从last_progress开始）
+    Eigen::Vector3d local_target_pt = end_pt_; // 默认目标为终点
+    bool found_valid_target = false;
+
+    for (double t = last_progress; t < global_duration; t += t_step) {
       Eigen::Vector3d pos_t = planner_manager_->global_data_.getPosition(t);
-      double dist = (pos_t - start_pt_).norm();
+      double dist = (pos_t - start_pt_).norm(); // 距离当前位置的距离
 
-      if (t < planner_manager_->global_data_.last_progress_time_ + 1e-5 && dist > planning_horizen_)
-      {
-        // todo
-        ROS_ERROR("last_progress_time_ ERROR !!!!!!!!!");
-        ROS_ERROR("last_progress_time_ ERROR !!!!!!!!!");
-        ROS_ERROR("last_progress_time_ ERROR !!!!!!!!!");
-        ROS_ERROR("last_progress_time_ ERROR !!!!!!!!!");
-        ROS_ERROR("last_progress_time_ ERROR !!!!!!!!!");
-        return;
-      }
-      if (dist < dist_min)
-      {
+      // 更新最小距离对应的时间（用于进度跟踪）
+      if (dist < dist_min) {
         dist_min = dist;
         dist_min_t = t;
       }
-      if (dist >= planning_horizen_)
-      {
-        local_target_pt_ = pos_t;
-        planner_manager_->global_data_.last_progress_time_ = dist_min_t;
+
+      // 找到第一个超出规划视野的点作为局部目标
+      if (dist >= planning_horizen_) {
+        local_target_pt = pos_t;
+        found_valid_target = true;
         break;
       }
     }
-    if (t > planner_manager_->global_data_.global_duration_) // Last global point
-    {
-      local_target_pt_ = end_pt_;
+
+    // 3. 若未找到超出视野的点，目标设为全局终点
+    if (!found_valid_target) {
+      local_target_pt = end_pt_;
     }
 
-    if ((end_pt_ - local_target_pt_).norm() < (planner_manager_->pp_.max_vel_ * planner_manager_->pp_.max_vel_) / (2 * planner_manager_->pp_.max_acc_))
-    {
-      // local_target_vel_ = (end_pt_ - init_pt_).normalized() * planner_manager_->pp_.max_vel_ * (( end_pt_ - local_target_pt_ ).norm() / ((planner_manager_->pp_.max_vel_*planner_manager_->pp_.max_vel_)/(2*planner_manager_->pp_.max_acc_)));
-      // cout << "A" << endl;
+    // 4. 更新全局路径进度时间（使用最小距离对应的时间）
+    planner_manager_->global_data_.last_progress_time_ = dist_min_t;
+
+    // 5. 计算局部目标速度（确保Z分量为0）
+    if ((end_pt_ - local_target_pt).norm() < (planner_manager_->pp_.max_vel_ * planner_manager_->pp_.max_vel_) / (2 * planner_manager_->pp_.max_acc_)) {
       local_target_vel_ = Eigen::Vector3d::Zero();
+    } else {
+      local_target_vel_ = planner_manager_->global_data_.getVelocity(dist_min_t);
     }
-    else
-    {
-      local_target_vel_ = planner_manager_->global_data_.getVelocity(t);
-      // cout << "AA" << endl;
-    }
+    local_target_vel_.z() = 0.0; // 强制Z轴速度为0
+
+    // 6. 强制局部目标点Z坐标与起点一致（XY平面约束）
+    local_target_pt_.z() = start_pt_.z();
+    local_target_pt_ = local_target_pt;
   }
   void EGOReplanFSM::singleGoalCallback(const geometry_msgs::PoseStamped::ConstPtr& msg)
   {

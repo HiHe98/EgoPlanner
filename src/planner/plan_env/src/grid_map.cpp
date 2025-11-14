@@ -442,7 +442,6 @@ void GridMap::raycastProcess()
   posToIndex(Eigen::Vector3d(min_x, min_y, min_z), md_.local_bound_min_);
   boundIndex(md_.local_bound_min_);
   boundIndex(md_.local_bound_max_);
-
   md_.local_updated_ = true;
 
   // update occupancy cached in queue
@@ -634,6 +633,7 @@ void GridMap::clearAndInflateLocalMap()
   // add virtual ceiling to limit flight height
   if (mp_.virtual_ceil_height_ > -0.5)
   {
+      // 打印虚拟天花板高度参数
     int ceil_id = floor((mp_.virtual_ceil_height_ - mp_.map_origin_(2)) * mp_.resolution_inv_);
     for (int x = md_.local_bound_min_(0); x <= md_.local_bound_max_(0); ++x)
       for (int y = md_.local_bound_min_(1); y <= md_.local_bound_max_(1); ++y)

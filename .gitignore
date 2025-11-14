@@ -10,3 +10,7 @@ rebound_planner_BB.zip
 .idea
 .vscode
 .vs
+*.BIN 
+*.bin 
+*.TXT
+*.DAT
