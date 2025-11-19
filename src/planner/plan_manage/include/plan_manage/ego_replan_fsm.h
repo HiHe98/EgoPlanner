@@ -104,6 +104,7 @@ namespace ego_planner
     
     
     void singleGoalCallback(const geometry_msgs::PoseStamped::ConstPtr& msg);
+    bool finish_flag_ = false;  // 标识是否已处理过"接近目标"分支
 
   public:
     EGOReplanFSM(/* args */)

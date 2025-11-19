@@ -357,10 +357,7 @@ namespace ego_planner
       else
       {
           if (odom_vel_.norm() < 0.1) {
-              ROS_WARN("[EGO] >>>>>  publish finish_event (emergency)  <<<<<");
-              std_msgs::Empty e;
-              pub_finish_event.publish(e);
-              ROS_INFO("[EGO] finish_event: emergency_stop");
+              ROS_INFO("[EGO]emergency_stop");
               changeFSMExecState(GEN_NEW_TRAJ, "FSM");
           }
       }
@@ -517,10 +514,16 @@ namespace ego_planner
 
       visualization_->displayOptimalList(info->position_traj_.getControlPoint(), 0);
     }
-    else if (close_reason) {
-        ROS_WARN("[FSM] reboundReplan failed due to CLOSE_TO_GOAL");
+    else if (close_reason && !finish_flag_)  // 仅当未处理过且close_reason为true时执行
+    {
+        ROS_WARN("[FSM] reboundReplan failed due to CLOSE_TO_GOAL, switching to WAIT_TARGET");
+        // 切换至WAIT_TARGET状态
+        changeFSMExecState(WAIT_TARGET, "接近目标，无需继续规划");
+        // 发布完成事件
         std_msgs::Empty e;
         pub_finish_event.publish(e);
+        // 关键：标记为已处理，后续不再进入该分支
+        finish_flag_ = true;
     }
     return plan_success;
   }
@@ -625,6 +628,8 @@ namespace ego_planner
       nav_msgs::Path path;
       path.header = msg->header;
       path.poses.push_back(*msg);
+      // 关键：接收新目标时，重置finish_flag_，允许第一次close_reason分支执行
+      finish_flag_ = false;
       waypointCallback(boost::make_shared<nav_msgs::Path>(path));
   }
 } // namespace ego_planner
