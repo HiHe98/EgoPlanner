@@ -46,6 +46,8 @@ namespace ego_planner
     pub_finish_event = nh.advertise<std_msgs::Empty>("/ego_planner/finish_event", 1, true);
     wp_single_sub_ = nh.subscribe<geometry_msgs::PoseStamped>(
         "/move_base_simple/goal2", 1, &EGOReplanFSM::singleGoalCallback, this);
+    stop_plan_sub_ = nh.subscribe<std_msgs::Empty>("/egoplanner/stopplan", 10, &EGOReplanFSM::stopPlanCallback, this);
+    hover_vel_pub_ = nh.advertise<geometry_msgs::Twist>("/mavros/setpoint_velocity/cmd_vel_unstamped", 10);
     if (target_type_ == TARGET_TYPE::MANUAL_TARGET)
       waypoint_sub_ = nh.subscribe("/waypoint_generator/waypoints", 1, &EGOReplanFSM::waypointCallback, this);
     else if (target_type_ == TARGET_TYPE::PRESET_TARGET)
@@ -111,6 +113,17 @@ namespace ego_planner
     }
   }
 
+  void ego_planner::EGOReplanFSM::stopPlanCallback(const std_msgs::Empty::ConstPtr& msg) {
+      ROS_WARN("[EGOReplanFSM] Received stop plan command: switching to WAIT_TARGET + stopping flight!");
+      
+      // 1. 切换状态机，暂停规划
+      changeFSMExecState(WAIT_TARGET, "Received /egoplanner/stopplan command");
+      finish_flag_ = false;
+
+      // 2. 发布悬停速度指令（核心修改：调用新的速度发布函数），有误待修复
+      // publishHoverVelocity();
+  }
+
   void EGOReplanFSM::waypointCallback(const nav_msgs::PathConstPtr &msg)
   {
     ROS_WARN("[waypointCB] enter, last_t=%.3f  global_dur=%.3f  pts=%zu",
@@ -139,6 +152,8 @@ namespace ego_planner
         Eigen::Vector3d::Zero(),  // 目标速度Z分量为0
         Eigen::Vector3d::Zero()   // 目标加速度Z分量为0
     );
+    trigger_ = true;          // 触发 INIT 状态跳转
+    have_target_ = true;      // 确保规划时有目标
     ROS_WARN("[planGlobalTraj] success=%d  new_duration=%.3f", 
             success, 
             planner_manager_->global_data_.global_duration_);
@@ -242,27 +257,29 @@ namespace ego_planner
     {
     case INIT:
     {
-      if (!have_odom_)
+      if (!have_odom_)  // 必须有里程计数据（合法启动条件）
       {
         return;
       }
-      if (!trigger_)
+      if (!trigger_)    // 必须收到航点触发信号（第一次航点）
       {
         return;
       }
-      changeFSMExecState(WAIT_TARGET, "FSM");
+      // 关键修改：从 WAIT_TARGET 改为 GEN_NEW_TRAJ，直接启动规划
+      changeFSMExecState(GEN_NEW_TRAJ, "First waypoint received + odom ready");
+      ROS_INFO("[FSM] INIT state: odom ready + trigger activated, start planning!");
       break;
     }
 
     case WAIT_TARGET:
     {
-      if (!have_target_)
-        return;
-      else
-      {
-        changeFSMExecState(GEN_NEW_TRAJ, "FSM");
-      }
-      break;
+        ROS_INFO_THROTTLE(1, "[FSM] In WAIT_TARGET state, waiting for NEW waypoint. Current have_target_: %d", have_target_);
+        // 仅在“无目标”时返回，有目标时也不跳转，保持 WAIT_TARGET 状态
+        if (!have_target_)
+            return;
+        // 关键：删除 else 分支的自动跳转逻辑！
+        // 原本的 else { changeFSMExecState(GEN_NEW_TRAJ, "FSM"); } 必须删掉
+        break;
     }
 
     case GEN_NEW_TRAJ:
@@ -448,6 +465,11 @@ namespace ego_planner
 
   bool EGOReplanFSM::callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj)
   {
+    // 新增：阻断WAIT_TARGET状态下的规划
+    if (exec_state_ == WAIT_TARGET) {
+        ROS_INFO("[callReboundReplan] Current state is WAIT_TARGET, skip replanning.");
+        return false;
+    }
     getLocalTarget();
 
     // 强制局部目标点Z坐标与起点一致
@@ -631,5 +653,26 @@ namespace ego_planner
       // 关键：接收新目标时，重置finish_flag_，允许第一次close_reason分支执行
       finish_flag_ = false;
       waypointCallback(boost::make_shared<nav_msgs::Path>(path));
+  }
+
+  void ego_planner::EGOReplanFSM::publishHoverVelocity() {
+    // 构造悬停速度指令：零线性速度 + 零角速度（停止所有运动，悬停）
+    geometry_msgs::Twist hover_vel;
+    // 线性速度：x/y/z 方向均为 0（停止平移）
+    hover_vel.linear.x = 0.0;
+    hover_vel.linear.y = 0.0;
+    hover_vel.linear.z = 0.0;
+    // 角速度：x/y/z 方向均为 0（停止旋转）
+    hover_vel.angular.x = 0.0;
+    hover_vel.angular.y = 0.0;
+    hover_vel.angular.z = 0.0;
+
+    // 持续发布悬停指令（发布 5 次，确保 PX4 收到并响应）
+    for (int i = 0; i < 5; ++i) {
+        hover_vel_pub_.publish(hover_vel);
+        ros::Duration(0.05).sleep();  // 间隔 50ms，避免消息丢失
+    }
+
+    ROS_INFO("[publishHoverVelocity] Published hover command (zero velocity) to PX4!");
   }
 } // namespace ego_planner

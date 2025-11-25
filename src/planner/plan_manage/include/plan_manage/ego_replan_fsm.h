@@ -20,6 +20,8 @@
 #include <std_msgs/Empty.h>
 
 #include <geometry_msgs/PoseStamped.h>
+#include <geometry_msgs/Twist.h>  // PX4 支持的速度指令类型
+
 
 
 namespace ego_planner
@@ -77,8 +79,8 @@ namespace ego_planner
     /* ROS utils */
     ros::NodeHandle node_;
     ros::Timer exec_timer_, safety_timer_;
-    ros::Subscriber waypoint_sub_, odom_sub_, wp_single_sub_;
-    ros::Publisher replan_pub_, new_pub_, bspline_pub_, data_disp_pub_, pub_finish_event;
+    ros::Subscriber waypoint_sub_, odom_sub_, wp_single_sub_,stop_plan_sub_;
+    ros::Publisher replan_pub_, new_pub_, bspline_pub_, data_disp_pub_, pub_finish_event,hover_vel_pub_;
 
     /* helper functions */
     bool callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj); // front-end and back-end method
@@ -104,7 +106,9 @@ namespace ego_planner
     
     
     void singleGoalCallback(const geometry_msgs::PoseStamped::ConstPtr& msg);
+    void stopPlanCallback(const std_msgs::Empty::ConstPtr& msg);  // 新增：暂停规划回调函数
     bool finish_flag_ = false;  // 标识是否已处理过"接近目标"分支
+
 
   public:
     EGOReplanFSM(/* args */)
@@ -117,7 +121,9 @@ namespace ego_planner
     void init(ros::NodeHandle &nh);
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    void publishHoverVelocity();
   };
+  
 
 } // namespace ego_planner
 
