@@ -1,9 +1,9 @@
 <launch>
     <!-- number of moving objects -->
     <arg name="drone_id" value="0"/>
-    <arg name="map_size_x" value="200.0"/>
-    <arg name="map_size_y" value="200.0"/>
-    <arg name="map_size_z" value="50.0"/>
+    <arg name="map_size_x" value="100.0"/>
+    <arg name="map_size_y" value="100.0"/>
+    <arg name="map_size_z" value="20.0"/>
 
     <!-- topic of your odometry such as VIO or LIO -->
     <arg name="odom_topic" default="/mavros/local_position/odom" />
@@ -28,7 +28,7 @@
         <param name="range_max" value="50.0"/>
     </node>
   <!-- main algorithm params -->
-    <include file="$(find gazebo_sim)/launch/advanced_param_exp_real.xml">
+    <include file="$(find ego_planner)/launch/advanced_param_exp_real.xml">
         <arg name="use_distinctive_trajs" value="true" />
         <arg name="map_size_x_" value="$(arg map_size_x)"/>
         <arg name="drone_id" value="$(arg drone_id)"/>
