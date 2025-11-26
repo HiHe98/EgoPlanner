@@ -45,7 +45,7 @@ namespace ego_planner
       local_end_time_ = -1;
       time_increase_ = 0.0;
       last_time_inc_ = 0.0;
-      last_progress_time_ = 0.0;
+      last_progress_time_ = ros::Time::now().toSec();
     }
 
     void setLocalTraj(UniformBspline traj, double local_ts, double local_te, double time_inc)

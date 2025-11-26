@@ -131,64 +131,69 @@ namespace ego_planner
         planner_manager_->global_data_.global_duration_,
         msg->poses.size());
     if (msg->poses[0].pose.position.z < -0.1)
-      return;
+        return;
 
     cout << "Triggered!" << endl;
     trigger_ = true;
     init_pt_ = odom_pos_;
 
-    // 1. 强制目标点Z坐标与无人机当前高度一致（固定在XY平面）
-    double fixed_z = odom_pos_.z(); // 取无人机当前Z坐标作为固定高度
+    // 1. 强制目标点Z坐标与无人机当前高度一致
+    double fixed_z = odom_pos_.z();
     end_pt_ << msg->poses[0].pose.position.x, 
               msg->poses[0].pose.position.y, 
-              fixed_z; // 替换硬编码的1.0，确保与当前高度一致
+              fixed_z;
 
-    // 规划全局路径（此时planGlobalTraj已修改为固定Z轴）
+    // 2. 调用 planGlobalTraj（无内部 success 分支，通过返回值判断）
     bool success = planner_manager_->planGlobalTraj(
         odom_pos_, 
         odom_vel_, 
         Eigen::Vector3d::Zero(), 
         end_pt_, 
-        Eigen::Vector3d::Zero(),  // 目标速度Z分量为0
-        Eigen::Vector3d::Zero()   // 目标加速度Z分量为0
+        Eigen::Vector3d::Zero(),
+        Eigen::Vector3d::Zero()
     );
-    trigger_ = true;          // 触发 INIT 状态跳转
-    have_target_ = true;      // 确保规划时有目标
+
+    have_target_ = true;
     ROS_WARN("[planGlobalTraj] success=%d  new_duration=%.3f", 
             success, 
             planner_manager_->global_data_.global_duration_);
 
-    // 2. 可视化目标点时，Z坐标同样固定为fixed_z
+    // 3. 可视化目标点
     visualization_->displayGoalPoint(end_pt_, Eigen::Vector4d(0, 0.5, 0.5, 1), 0.3, 0);
 
+    // 4. 核心修改：根据返回值 success 触发状态切换（重点适配第一次航点）
     if (success)
     {
-      /*** 全局路径可视化：确保所有采样点Z坐标固定 ***/
-      constexpr double step_size_t = 0.1;
-      int i_end = floor(planner_manager_->global_data_.global_duration_ / step_size_t);
-      vector<Eigen::Vector3d> gloabl_traj(i_end);
-      for (int i = 0; i < i_end; i++)
-      {
-        Eigen::Vector3d traj_pt = planner_manager_->global_data_.global_traj_.evaluate(i * step_size_t);
-        traj_pt.z() = fixed_z; // 再次强制可视化的轨迹点Z坐标固定（双重保险）
-        gloabl_traj[i] = traj_pt;
-      }
+        /*** 全局路径可视化 ***/
+        constexpr double step_size_t = 0.1;
+        int i_end = floor(planner_manager_->global_data_.global_duration_ / step_size_t);
+        vector<Eigen::Vector3d> gloabl_traj(i_end);
+        for (int i = 0; i < i_end; i++)
+        {
+            Eigen::Vector3d traj_pt = planner_manager_->global_data_.global_traj_.evaluate(i * step_size_t);
+            traj_pt.z() = fixed_z;
+            gloabl_traj[i] = traj_pt;
+        }
 
-      end_vel_.setZero();
-      have_target_ = true;
-      have_new_target_ = true;
+        end_vel_.setZero();
+        have_target_ = true;
+        have_new_target_ = true;
 
-      /*** 状态机切换 ***/
-      if (exec_state_ == WAIT_TARGET)
-        changeFSMExecState(GEN_NEW_TRAJ, "TRIG");
-      else if (exec_state_ == EXEC_TRAJ)
-        changeFSMExecState(REPLAN_TRAJ, "TRIG");
+        /*** 状态机切换：新增 INIT 分支，确保第一次航点直接进入规划 ***/
+        if (exec_state_ == INIT) {
+            // 第一次航点（初始状态为 INIT）：切换到 GEN_NEW_TRAJ
+            changeFSMExecState(GEN_NEW_TRAJ, "First waypoint trigger (planGlobalTraj success)");
+        }
+        else if (exec_state_ == WAIT_TARGET)
+            changeFSMExecState(GEN_NEW_TRAJ, "TRIG");
+        else if (exec_state_ == EXEC_TRAJ)
+            changeFSMExecState(REPLAN_TRAJ, "TRIG");
 
-      visualization_->displayGlobalPathList(gloabl_traj, 0.1, 0);
+        visualization_->displayGlobalPathList(gloabl_traj, 0.1, 0);
     }
     else
     {
-      ROS_ERROR("Unable to generate global trajectory!");
+        ROS_ERROR("Unable to generate global trajectory!");
     }
   }
 
@@ -257,17 +262,15 @@ namespace ego_planner
     {
     case INIT:
     {
-      if (!have_odom_)  // 必须有里程计数据（合法启动条件）
+      if (!have_odom_)
       {
         return;
       }
-      if (!trigger_)    // 必须收到航点触发信号（第一次航点）
+      if (!trigger_)
       {
         return;
       }
-      // 关键修改：从 WAIT_TARGET 改为 GEN_NEW_TRAJ，直接启动规划
-      changeFSMExecState(GEN_NEW_TRAJ, "First waypoint received + odom ready");
-      ROS_INFO("[FSM] INIT state: odom ready + trigger activated, start planning!");
+      changeFSMExecState(WAIT_TARGET, "FSM");
       break;
     }
 
