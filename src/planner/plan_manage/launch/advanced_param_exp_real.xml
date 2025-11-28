@@ -85,10 +85,13 @@
     <param name="fsm/waypoint4_y" value="$(arg point4_y)" type="double"/>
     <param name="fsm/waypoint4_z" value="$(arg point4_z)" type="double"/>
 
-    <param name="grid_map/resolution"      value="0.1" /> 
-    <param name="grid_map/map_size_x"   value="$(arg map_size_x_)" /> 
-    <param name="grid_map/map_size_y"   value="$(arg map_size_y_)" /> 
-    <param name="grid_map/map_size_z"   value="$(arg map_size_z_)" /> 
+    <!-- 动态地图核心配置：固定地图尺寸（无需过大，覆盖无人机周围即可） -->
+    <param name="grid_map/map_size_x" value="30" />  <!-- 固定X轴尺寸 -->
+    <param name="grid_map/map_size_y" value="30" />  <!-- 固定Y轴尺寸 -->
+    <param name="grid_map/map_size_z" value="15" />  <!-- 固定Z轴尺寸 -->
+    <param name="grid_map/resolution" value="0.1" />   <!-- 10cm体素（平衡精度和内存） -->
+    <param name="grid_map/dynamic_map_enable" value="true" />  <!-- 启用动态地图 -->
+    <param name="grid_map/dynamic_update_threshold" value="8" />  <!-- 原点更新阈值：无人机偏离中心超过2m则更新 -->
     <param name="grid_map/local_update_range_x"  value="8" /> 
     <param name="grid_map/local_update_range_y"  value="8" /> 
     <param name="grid_map/local_update_range_z"  value="4.5" /> 

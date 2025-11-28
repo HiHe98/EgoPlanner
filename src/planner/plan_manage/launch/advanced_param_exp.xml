@@ -90,7 +90,7 @@
     <param name="grid_map/map_size_y" value="100" />  <!-- 固定Y轴尺寸 -->
     <param name="grid_map/map_size_z" value="20" />  <!-- 固定Z轴尺寸 -->
     <param name="grid_map/resolution" value="0.1" />   <!-- 10cm体素（平衡精度和内存） -->
-    <param name="grid_map/dynamic_map_enable" value="false" />  <!-- 启用动态地图 -->
+    <param name="grid_map/dynamic_map_enable" value="true" />  <!-- 启用动态地图 -->
     <param name="grid_map/dynamic_update_threshold" value="25" />  <!-- 原点更新阈值：无人机偏离中心超过2m则更新 -->
     <param name="grid_map/local_update_range_x"  value="8" /> 
     <param name="grid_map/local_update_range_y"  value="8" /> 
