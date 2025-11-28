@@ -80,6 +80,11 @@ struct MappingParameters {
 
   /* active mapping */
   double unknown_flag_;
+
+  // 新增：动态地图参数（添加到结构体末尾）
+  bool dynamic_map_enable_;          // 是否启用动态地图
+  double dynamic_update_threshold_;  // 原点更新阈值（单位：m）
+  double block_size_;      
 };
 
 // intermediate mapping data for fusion
@@ -181,6 +186,31 @@ public:
 
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
+  // 新增：动态地图原点更新函数
+  bool updateDynamicMapOrigin(const Eigen::Vector3d& drone_pos);
+
+  // 新增：计算新旧地图重叠区域
+  Eigen::AlignedBox3d calcOverlapBoundary(const Eigen::Vector3d& old_origin, 
+                                          const Eigen::Vector3d& new_origin);
+
+  // 新增：有效数据迁移函数
+  void migrateValidData(const Eigen::Vector3d& old_origin, const Eigen::Vector3d& new_origin);
+
+  // 新增：重载 resetBuffer（按需重置，保留重叠区域）
+  void resetBuffer(const Eigen::AlignedBox3d& keep_boundary);
+
+  // 新增：重载 posToIndex（带自定义原点）
+  void posToIndex(const Eigen::Vector3d& pos, Eigen::Vector3i& idx, const Eigen::Vector3d& origin);
+
+  // 新增：重载 indexToPos（带自定义原点，命名避免冲突）
+  void indexToPosWithOrigin(const Eigen::Vector3i& idx, Eigen::Vector3d& pos, const Eigen::Vector3d& origin);
+
+  // 新增：重载 boundIndex（带自定义原点）
+  void boundIndex(Eigen::Vector3i& idx, const Eigen::Vector3d& origin);
+
+  // 新增：计算旧地图体素地址
+  int oldToAddress(int x, int y, int z);
+
 private:
   MappingParameters mp_;
   MappingData md_;
@@ -227,6 +257,8 @@ private:
   ros::Publisher map_pub_, map_inf_pub_;
   ros::Publisher unknown_pub_;
   ros::Timer occ_timer_, vis_timer_;
+  // 新增：动态地图相关成员变量（非结构体内部参数）
+  Eigen::Vector3d last_map_origin_;  // 上一次地图原点（用于判断是否更新）
 
   //
   uniform_real_distribution<double> rand_noise_;

@@ -48,6 +48,18 @@ void GridMap::initMap(ros::NodeHandle &nh)
   node_.param("grid_map/frame_id", mp_.frame_id_, string("world"));
   node_.param("grid_map/local_map_margin", mp_.local_map_margin_, 1);
   node_.param("grid_map/ground_height", mp_.ground_height_, 1.0);
+  // 新增：加载动态地图配置
+  node_.param("grid_map/dynamic_map_enable", mp_.dynamic_map_enable_, true);
+  node_.param("grid_map/dynamic_update_threshold", mp_.dynamic_update_threshold_, 2.0);
+
+  // 初始化地图原点（首次以默认值或无人机初始位置为中心） 
+  if (mp_.dynamic_map_enable_)
+  {
+    // 若未收到无人机位置，先以默认原点初始化
+    last_map_origin_ = mp_.map_origin_;
+    ROS_INFO("[GridMap] Dynamic map enabled! Update threshold: %.1fm", mp_.dynamic_update_threshold_);
+  }
+
 
   mp_.resolution_inv_ = 1 / mp_.resolution_;
   mp_.map_origin_ = Eigen::Vector3d(-x_size / 2.0, -y_size / 2.0, mp_.ground_height_);
@@ -175,6 +187,49 @@ void GridMap::resetBuffer(Eigen::Vector3d min_pos, Eigen::Vector3d max_pos)
         md_.occupancy_buffer_inflate_[toAddress(x, y, z)] = 0;
       }
 }
+
+  // 新增：按需重置（保留 keep_boundary 内的区域，重置外部区域）
+  // 适配数据迁移场景：重叠区域保留空白，等待迁移数据覆盖
+  void GridMap::resetBuffer(const Eigen::AlignedBox3d& keep_boundary)
+  {
+  // 新地图的全局边界（从配置参数获取）
+  Eigen::Vector3d map_min = mp_.map_min_boundary_;
+  Eigen::Vector3d map_max = mp_.map_max_boundary_;
+
+  // 将新地图全局边界转换为体素索引范围
+  Eigen::Vector3i min_id, max_id;
+  posToIndex(map_min, min_id);
+  posToIndex(map_max, max_id);
+  boundIndex(min_id);  // 确保索引不小于0
+  boundIndex(max_id);  // 确保索引不超过地图最大体素数
+
+  // 遍历新地图所有体素，仅重置“不在保留区域内”的体素
+  for (int x = min_id(0); x <= max_id(0); ++x)
+  {
+    for (int y = min_id(1); y <= max_id(1); ++y)
+    {
+      for (int z = min_id(2); z <= max_id(2); ++z)
+      {
+        // 1. 计算当前体素的世界坐标
+        Eigen::Vector3d voxel_pos;
+        indexToPos(Eigen::Vector3i(x, y, z), voxel_pos);
+
+        // 2. 判断是否在保留区域内：在则跳过（不重置），不在则重置
+        if (keep_boundary.contains(voxel_pos))
+          continue;
+
+        // 3. 重置体素数据（与原有 resetBuffer 逻辑一致）
+        int idx = toAddress(x, y, z);
+        md_.occupancy_buffer_[idx] = mp_.clamp_min_log_ - mp_.unknown_flag_;  // 未知状态
+        md_.occupancy_buffer_inflate_[idx] = 0;  // 非膨胀障碍
+      }
+    }
+  }
+
+  // 更新局部边界（与原有 resetBuffer 逻辑一致）
+  md_.local_bound_min_ = min_id;
+  md_.local_bound_max_ = max_id;
+  }
 
 int GridMap::setCacheOccupancy(Eigen::Vector3d pos, int occ)
 {
@@ -709,6 +764,11 @@ void GridMap::depthPoseCallback(const sensor_msgs::ImageConstPtr &img,
     md_.has_odom_ = true;
     md_.update_num_ += 1;
     md_.occ_need_update_ = true;
+    // 新增：调用动态地图原点更新
+    if (mp_.dynamic_map_enable_)
+    {
+      updateDynamicMapOrigin(md_.camera_pos_);
+    }
   }
   else
   {
@@ -725,6 +785,12 @@ void GridMap::odomCallback(const nav_msgs::OdometryConstPtr &odom)
   md_.camera_pos_(2) = odom->pose.pose.position.z;
 
   md_.has_odom_ = true;
+
+  // 新增：兜底调用，确保位置更新时触发
+  if (mp_.dynamic_map_enable_)
+  {
+    updateDynamicMapOrigin(md_.camera_pos_);
+  }
 }
 
 void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
@@ -1011,6 +1077,187 @@ void GridMap::depthOdomCallback(const sensor_msgs::ImageConstPtr &img,
   cv_ptr->image.copyTo(md_.depth_image_);
 
   md_.occ_need_update_ = true;
+
+  // 新增：调用动态地图原点更新（使用最新的 camera_pos_）
+  if (mp_.dynamic_map_enable_)
+  {
+    updateDynamicMapOrigin(md_.camera_pos_);
+  }
 }
 
+  bool GridMap::updateDynamicMapOrigin(const Eigen::Vector3d& drone_pos)
+  {
+  if (!mp_.dynamic_map_enable_)
+    return false;
+
+  // 计算当前无人机相对于地图中心的偏移
+  Eigen::Vector3d map_center = last_map_origin_ + mp_.map_size_ / 2.0;
+  Eigen::Vector3d offset = drone_pos - map_center;
+
+  // 若偏移小于阈值，无需更新
+  if (offset.norm() < mp_.dynamic_update_threshold_)
+    return false;
+
+  ROS_INFO("[GridMap] Update dynamic map origin! Old center: (%.2f,%.2f), New center: (%.2f,%.2f)",
+           map_center.x(), map_center.y(), drone_pos.x(), drone_pos.y());
+
+  // 1. 保存旧原点（用于数据迁移）
+  Eigen::Vector3d old_origin = last_map_origin_;
+
+  // 2. 计算新原点（无人机位置为中心）
+  Eigen::Vector3d new_origin;
+  new_origin.x() = drone_pos.x() - mp_.map_size_(0) / 2.0;
+  new_origin.y() = drone_pos.y() - mp_.map_size_(1) / 2.0;
+  new_origin.z() = mp_.ground_height_;  // Z轴原点固定
+
+  // 3. 重置缓冲区（先清空新地图，再迁移有效数据）
+  resetBuffer();
+
+  // 4. 核心：迁移旧地图的有效数据到新地图
+  migrateValidData(old_origin, new_origin);
+
+  // 5. 更新地图核心参数
+  mp_.map_origin_ = new_origin;
+  mp_.map_min_boundary_ = new_origin;
+  mp_.map_max_boundary_ = new_origin + mp_.map_size_;
+  last_map_origin_ = new_origin;
+
+  return true;
+  }
+
+  // 计算原地图与新地图的重叠边界（世界坐标系）
+  Eigen::AlignedBox3d GridMap::calcOverlapBoundary(const Eigen::Vector3d& old_origin, 
+                                                 const Eigen::Vector3d& new_origin)
+  {
+  // 原地图边界
+  Eigen::Vector3d old_min = old_origin;
+  Eigen::Vector3d old_max = old_origin + mp_.map_size_;
+  // 新地图边界
+  Eigen::Vector3d new_min = new_origin;
+  Eigen::Vector3d new_max = new_origin + mp_.map_size_;
+
+  // 重叠区域边界：取两个地图边界的交集
+  Eigen::Vector3d overlap_min, overlap_max;
+  overlap_min.x() = max(old_min.x(), new_min.x());
+  overlap_min.y() = max(old_min.y(), new_min.y());
+  overlap_min.z() = max(old_min.z(), new_min.z());
+  overlap_max.x() = min(old_max.x(), new_max.x());
+  overlap_max.y() = min(old_max.y(), new_max.y());
+  overlap_max.z() = min(old_max.z(), new_max.z());
+
+  // 若无重叠区域（偏移过大），返回空边界
+  if (overlap_min.x() >= overlap_max.x() || 
+      overlap_min.y() >= overlap_max.y() || 
+      overlap_min.z() >= overlap_max.z())
+  {
+    return Eigen::AlignedBox3d(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+  }
+
+  return Eigen::AlignedBox3d(overlap_min, overlap_max);
+  }
+
+  void GridMap::migrateValidData(const Eigen::Vector3d& old_origin, const Eigen::Vector3d& new_origin)
+  {
+  // 1. 计算重叠区域
+  Eigen::AlignedBox3d overlap_box = calcOverlapBoundary(old_origin, new_origin);
+  if (overlap_box.isEmpty())
+  {
+    ROS_WARN("[migrateValidData] No overlap, full reset!");
+    resetBuffer();
+    return;
+  }
+
+  ROS_INFO("[migrateValidData] Migrating valid data. Overlap boundary: min(%.2f,%.2f,%.2f) → max(%.2f,%.2f,%.2f)",
+           overlap_box.min().x(), overlap_box.min().y(), overlap_box.min().z(),
+           overlap_box.max().x(), overlap_box.max().y(), overlap_box.max().z());
+
+  // 2. 仅重置新地图的非重叠区域
+  resetBuffer(overlap_box);
+
+  // 3. 补充变量声明：计算旧地图中重叠区域的体素索引范围（关键修复！）
+  Eigen::Vector3i old_min_idx, old_max_idx;
+  // 用旧地图原点计算重叠区域的体素索引
+  posToIndex(overlap_box.min(), old_min_idx, old_origin);
+  posToIndex(overlap_box.max(), old_max_idx, old_origin);
+  // 确保索引在旧地图范围内（避免越界）
+  boundIndex(old_min_idx, old_origin);
+  boundIndex(old_max_idx, old_origin);
+
+  // 4. 遍历旧地图重叠区域的所有体素，筛选有效数据并迁移
+  int migrate_cnt = 0;
+  Eigen::Vector3d old_voxel_pos, new_voxel_pos;
+  Eigen::Vector3i new_voxel_idx;
+  int old_addr, new_addr;
+
+  // 现在可以正常使用 old_min_idx 和 old_max_idx 了
+  for (int x = old_min_idx.x(); x <= old_max_idx.x(); ++x)
+  {
+    for (int y = old_min_idx.y(); y <= old_max_idx.y(); ++y)
+    {
+      for (int z = old_min_idx.z(); z <= old_max_idx.z(); ++z)
+      {
+        // 计算旧地图中当前体素的世界坐标（调用修复后的重载函数）
+        indexToPosWithOrigin(Eigen::Vector3i(x, y, z), old_voxel_pos, old_origin);
+
+        // 筛选有效数据：仅迁移占据状态的体素
+        old_addr = oldToAddress(x, y, z);
+        if (md_.occupancy_buffer_[old_addr] <= mp_.min_occupancy_log_)
+          continue;
+
+        // 计算该体素在新地图中的索引
+        new_voxel_pos = old_voxel_pos;
+        posToIndex(new_voxel_pos, new_voxel_idx);
+        if (!isInMap(new_voxel_idx))
+          continue;
+
+        // 迁移数据到新地图
+        new_addr = toAddress(new_voxel_idx);
+        md_.occupancy_buffer_[new_addr] = md_.occupancy_buffer_[old_addr];
+        md_.occupancy_buffer_inflate_[new_addr] = md_.occupancy_buffer_inflate_[old_addr];
+
+        migrate_cnt++;
+      }
+    }
+  }
+
+  ROS_INFO("[migrateValidData] Migration finished! Migrated %d valid obstacle voxels.", migrate_cnt);
+  }
+
+
+  // 重载 posToIndex：根据指定原点计算体素索引
+  void GridMap::posToIndex(const Eigen::Vector3d& pos, Eigen::Vector3i& idx, const Eigen::Vector3d& origin)
+  {
+  idx.x() = floor((pos.x() - origin.x()) * mp_.resolution_inv_);
+  idx.y() = floor((pos.y() - origin.y()) * mp_.resolution_inv_);
+  idx.z() = floor((pos.z() - origin.z()) * mp_.resolution_inv_);
+  }
+
+  // 修复后：带自定义原点的 indexToPos 实现
+  void GridMap::indexToPosWithOrigin(const Eigen::Vector3i& idx, Eigen::Vector3d& pos, const Eigen::Vector3d& origin)
+  {
+  pos.x() = origin.x() + (idx.x() + 0.5) * mp_.resolution_;
+  pos.y() = origin.y() + (idx.y() + 0.5) * mp_.resolution_;
+  pos.z() = origin.z() + (idx.z() + 0.5) * mp_.resolution_;
+  }
+
+  // 重载 boundIndex：根据指定原点限制索引在地图范围内
+  void GridMap::boundIndex(Eigen::Vector3i& idx, const Eigen::Vector3d& origin)
+  {
+  Eigen::Vector3i max_idx;
+  max_idx.x() = floor(mp_.map_size_(0) * mp_.resolution_inv_) - 1;
+  max_idx.y() = floor(mp_.map_size_(1) * mp_.resolution_inv_) - 1;
+  max_idx.z() = floor(mp_.map_size_(2) * mp_.resolution_inv_) - 1;
+
+  idx.x() = max(0, min(idx.x(), max_idx.x()));
+  idx.y() = max(0, min(idx.y(), max_idx.y()));
+  idx.z() = max(0, min(idx.z(), max_idx.z()));
+  }
+
+  // 重载 toAddress：计算指定原点下的体素缓冲区地址
+  int GridMap::oldToAddress(int x, int y, int z)
+  {
+  int max_x = floor(mp_.map_size_(0) * mp_.resolution_inv_);
+  int max_y = floor(mp_.map_size_(1) * mp_.resolution_inv_);
+  return z * max_x * max_y + y * max_x + x;
+  }
 // GridMap

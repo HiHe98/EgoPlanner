@@ -1,9 +1,9 @@
 <launch>
     <!-- number of moving objects -->
     <arg name="drone_id" value="0"/>
-    <arg name="map_size_x" value="100.0"/>
-    <arg name="map_size_y" value="100.0"/>
-    <arg name="map_size_z" value=" 20.0"/>
+    <arg name="map_size_x" value="10.0"/>
+    <arg name="map_size_y" value="10.0"/>
+    <arg name="map_size_z" value=" 5.0"/>
     <arg name="obstaclestopper" default="false"/>
 
     <!-- topic of your odometry such as VIO or LIO -->
