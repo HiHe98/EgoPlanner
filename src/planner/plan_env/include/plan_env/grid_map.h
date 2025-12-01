@@ -81,10 +81,6 @@ struct MappingParameters {
   /* active mapping */
   double unknown_flag_;
 
-  // 新增：动态地图参数（添加到结构体末尾）
-  bool dynamic_map_enable_;          // 是否启用动态地图
-  double dynamic_update_threshold_;  // 原点更新阈值（单位：m）
-  double block_size_;      
 };
 
 // intermediate mapping data for fusion
@@ -259,7 +255,16 @@ private:
   ros::Timer occ_timer_, vis_timer_;
   // 新增：动态地图相关成员变量（非结构体内部参数）
   Eigen::Vector3d last_map_origin_;  // 上一次地图原点（用于判断是否更新）
-
+  ros::Timer update_check_timer_;  // 定时检查定时器
+  
+  // void updateCheckCallback(const ros::TimerEvent& event);
+  
+  //动态更新参数（缺失的核心变量，必须添加）
+  bool dynamic_map_enable_;  // 是否启用动态地图跟随
+  double update_threshold_;  // 3D偏移触发阈值
+  double min_move_dist_;     // 最小移动距离（过滤抖动）
+  double update_hysteresis_; // 滞后量（防止临界波动）
+  double update_check_freq_; // 定时检查频率（统一用旧变量名，避免冲突)
   //
   uniform_real_distribution<double> rand_noise_;
   normal_distribution<double> rand_noise2_;

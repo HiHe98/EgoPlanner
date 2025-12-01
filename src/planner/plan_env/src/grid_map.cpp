@@ -48,18 +48,12 @@ void GridMap::initMap(ros::NodeHandle &nh)
   node_.param("grid_map/frame_id", mp_.frame_id_, string("world"));
   node_.param("grid_map/local_map_margin", mp_.local_map_margin_, 1);
   node_.param("grid_map/ground_height", mp_.ground_height_, 1.0);
-  // 新增：加载动态地图配置
-  node_.param("grid_map/dynamic_map_enable", mp_.dynamic_map_enable_, true);
-  node_.param("grid_map/dynamic_update_threshold", mp_.dynamic_update_threshold_, 2.0);
-
-  // 初始化地图原点（首次以默认值或无人机初始位置为中心） 
-  if (mp_.dynamic_map_enable_)
-  {
-    // 若未收到无人机位置，先以默认原点初始化
-    last_map_origin_ = mp_.map_origin_;
-    ROS_INFO("[GridMap] Dynamic map enabled! Update threshold: %.1fm", mp_.dynamic_update_threshold_);
-  }
-
+  // 2. 动态更新参数
+  node_.param("grid_map/dynamic_map_enable", dynamic_map_enable_, true);
+  node_.param("grid_map/update_threshold", update_threshold_, 8.0);
+  node_.param("grid_map/min_move_dist", min_move_dist_, 2.0);
+  node_.param("grid_map/update_hysteresis", update_hysteresis_, 2.0);
+  node_.param("grid_map/update_freq", update_check_freq_, 1.0);
 
   mp_.resolution_inv_ = 1 / mp_.resolution_;
   mp_.map_origin_ = Eigen::Vector3d(-x_size / 2.0, -y_size / 2.0, mp_.ground_height_);
@@ -151,6 +145,46 @@ void GridMap::initMap(ros::NodeHandle &nh)
   md_.fuse_time_ = 0.0;
   md_.update_num_ = 0;
   md_.max_fuse_time_ = 0.0;
+
+  // 初始化地图原点：固定中心在 (0,0,0)，不受无人机初始位置影响
+  // 注意：直接使用已声明的 x_size、y_size（无需重新定义 double x_size）
+  x_size = mp_.map_size_.x();  // 地图 X 轴尺寸（从参数读取，如30m）
+  y_size = mp_.map_size_.y();  // 地图 Y 轴尺寸（如30m）
+
+  // 1. 固定地图中心为 (0,0,0)（核心修改）
+  Eigen::Vector3d map_fixed_center(0.0, 0.0, 0.0);  // 固定中心，不依赖无人机位置
+
+  // 2. 计算初始原点：中心 - 地图尺寸/2（确保地图范围对称围绕 (0,0,0)）
+  Eigen::Vector3d init_origin;
+  init_origin.x() = map_fixed_center.x() - x_size / 2.0;  // 如 0 - 30/2 = -15m
+  init_origin.y() = map_fixed_center.y() - y_size / 2.0;  // 如 0 - 30/2 = -15m
+  init_origin.z() = mp_.ground_height_;  // Z 轴原点仍用地面高度（保持不变）
+
+  // 3. 打印无人机初始位置（仅调试用，不影响地图初始化）
+  // ROS_INFO("[调试] 无人机初始位置 md_.camera_pos_: (%.2f, %.2f, %.2f)",
+  //         md_.camera_pos_.x(), md_.camera_pos_.y(), md_.camera_pos_.z());
+
+  // 4. 初始化核心参数（确保地图范围正确）
+  mp_.map_origin_ = init_origin;
+  last_map_origin_ = init_origin;  // 同步初始化 last_map_origin_（动态更新时用）
+  mp_.map_min_boundary_ = init_origin;
+  mp_.map_max_boundary_ = init_origin + mp_.map_size_;
+
+  // 5. 输出初始化日志，确认正确性（关键验证）
+  ROS_WARN("[GridMap] Init: 地图固定中心=(%.2f,%.2f,%.2f)",
+          map_fixed_center.x(), map_fixed_center.y(), map_fixed_center.z());
+  ROS_WARN("[GridMap] Init: 地图原点=(%.2f,%.2f,%.2f)",
+          init_origin.x(), init_origin.y(), init_origin.z());
+  ROS_WARN("[GridMap] Init: 地图范围 X=[%.2f,%.2f], Y=[%.2f,%.2f], Z=[%.2f,%.2f]",
+          mp_.map_min_boundary_.x(), mp_.map_max_boundary_.x(),
+          mp_.map_min_boundary_.y(), mp_.map_max_boundary_.y(),
+          mp_.map_min_boundary_.z(), mp_.map_max_boundary_.z());
+
+  // 6. 初始化定时检查定时器（1Hz 触发，保持不变）
+  // update_check_timer_ = node_.createTimer(ros::Duration(1.0 / update_check_freq_),
+  //                                         &GridMap::updateCheckCallback, this);
+
+  // ROS_WARN("[GridMap] Update check timer started: %.1f Hz", update_check_freq_);
 
   // rand_noise_ = uniform_real_distribution<double>(-0.2, 0.2);
   // rand_noise2_ = normal_distribution<double>(0, 0.2);
@@ -765,7 +799,7 @@ void GridMap::depthPoseCallback(const sensor_msgs::ImageConstPtr &img,
     md_.update_num_ += 1;
     md_.occ_need_update_ = true;
     // 新增：调用动态地图原点更新
-    if (mp_.dynamic_map_enable_)
+    if (dynamic_map_enable_)
     {
       updateDynamicMapOrigin(md_.camera_pos_);
     }
@@ -787,7 +821,7 @@ void GridMap::odomCallback(const nav_msgs::OdometryConstPtr &odom)
   md_.has_odom_ = true;
 
   // 新增：兜底调用，确保位置更新时触发
-  if (mp_.dynamic_map_enable_)
+  if (dynamic_map_enable_)
   {
     updateDynamicMapOrigin(md_.camera_pos_);
   }
@@ -1079,7 +1113,7 @@ void GridMap::depthOdomCallback(const sensor_msgs::ImageConstPtr &img,
   md_.occ_need_update_ = true;
 
   // 新增：调用动态地图原点更新（使用最新的 camera_pos_）
-  if (mp_.dynamic_map_enable_)
+  if (dynamic_map_enable_)
   {
     updateDynamicMapOrigin(md_.camera_pos_);
   }
@@ -1087,40 +1121,87 @@ void GridMap::depthOdomCallback(const sensor_msgs::ImageConstPtr &img,
 
   bool GridMap::updateDynamicMapOrigin(const Eigen::Vector3d& drone_pos)
   {
-  if (!mp_.dynamic_map_enable_)
+  if (!dynamic_map_enable_)
     return false;
 
-  // 计算当前无人机相对于地图中心的偏移
+  // 1. 计算当前地图中心（3D，含 Z 轴）- 复用 mp_.map_size_（已从 launch 读取）
   Eigen::Vector3d map_center = last_map_origin_ + mp_.map_size_ / 2.0;
   Eigen::Vector3d offset = drone_pos - map_center;
+  double offset_dist = offset.norm();
 
-  // 若偏移小于阈值，无需更新
-  if (offset.norm() < mp_.dynamic_update_threshold_)
+  ROS_DEBUG("[GridMap] Drone pos: (%.2f,%.2f,%.2f), Map center: (%.2f,%.2f,%.2f), 3D offset: %.2fm",
+           drone_pos.x(), drone_pos.y(), drone_pos.z(),
+           map_center.x(), map_center.y(), map_center.z(),
+           offset_dist);
+
+  // 2. 阈值过滤（使用从 launch 读取的类成员变量，无硬编码）
+  static bool just_updated = false;
+
+  if (just_updated)
+  {
+    // 用类成员变量：update_threshold_（触发阈值）、update_hysteresis_（滞后量）
+    if (offset_dist < (update_threshold_ - update_hysteresis_))
+    {
+      just_updated = false;
+      return false;
+    }
+    else
+    {
+      return false;
+    }
+  }
+
+  // （满足防抖+阈值要求）
+  if (offset_dist < update_threshold_ || offset_dist < min_move_dist_)
+  {
     return false;
+  }
 
-  ROS_INFO("[GridMap] Update dynamic map origin! Old center: (%.2f,%.2f), New center: (%.2f,%.2f)",
-           map_center.x(), map_center.y(), drone_pos.x(), drone_pos.y());
+  // 3. 计算新原点（复用 mp_.map_size_，无硬编码）
+  ROS_INFO("[GridMap] Trigger map origin update! Old center: (%.2f,%.2f,%.2f) → New center: (%.2f,%.2f,%.2f) (3D offset: %.2fm)",
+           map_center.x(), map_center.y(), map_center.z(),
+           drone_pos.x(), drone_pos.y(), drone_pos.z(),
+           offset_dist);
 
-  // 1. 保存旧原点（用于数据迁移）
   Eigen::Vector3d old_origin = last_map_origin_;
-
-  // 2. 计算新原点（无人机位置为中心）
   Eigen::Vector3d new_origin;
+  // X/Y/Z 轴：复用 mp_.map_size_（已从 launch 读取，支持动态调整地图尺寸）
   new_origin.x() = drone_pos.x() - mp_.map_size_(0) / 2.0;
   new_origin.y() = drone_pos.y() - mp_.map_size_(1) / 2.0;
-  new_origin.z() = mp_.ground_height_;  // Z轴原点固定
+  new_origin.z() = drone_pos.z() - mp_.map_size_(2) / 2.0;
 
-  // 3. 重置缓冲区（先清空新地图，再迁移有效数据）
+  // 4. 数据迁移 + 更新核心参数
   resetBuffer();
-
-  // 4. 核心：迁移旧地图的有效数据到新地图
   migrateValidData(old_origin, new_origin);
 
-  // 5. 更新地图核心参数
   mp_.map_origin_ = new_origin;
   mp_.map_min_boundary_ = new_origin;
   mp_.map_max_boundary_ = new_origin + mp_.map_size_;
   last_map_origin_ = new_origin;
+
+  just_updated = true;
+
+  // 输出更新后边界（验证参数生效）
+  ROS_INFO("[GridMap] Updated map boundary: x=[%.2f,%.2f], y=[%.2f,%.2f], z=[%.2f,%.2f] (center Z: %.2f)",
+           mp_.map_min_boundary_.x(), mp_.map_max_boundary_.x(),
+           mp_.map_min_boundary_.y(), mp_.map_max_boundary_.y(),
+           mp_.map_min_boundary_.z(), mp_.map_max_boundary_.z(),
+           new_origin.z() + mp_.map_size_(2)/2.0);
+
+  // 新增：直接通过地图边界判断起点是否在地图内（无函数依赖，不会报错）
+  bool is_start_in_map = (drone_pos.x() >= mp_.map_min_boundary_.x() && drone_pos.x() <= mp_.map_max_boundary_.x()) &&
+                        (drone_pos.y() >= mp_.map_min_boundary_.y() && drone_pos.y() <= mp_.map_max_boundary_.y()) &&
+                        (drone_pos.z() >= mp_.map_min_boundary_.z() && drone_pos.z() <= mp_.map_max_boundary_.z());
+
+  // 保留日志输出（用于调试）
+  if (!is_start_in_map)
+  {
+    ROS_ERROR("[GridMap] 无人机起点 (%.2f,%.2f,%.2f) 不在地图范围内！地图边界：x=[%.2f,%.2f], y=[%.2f,%.2f], z=[%.2f,%.2f]",
+              drone_pos.x(), drone_pos.y(), drone_pos.z(),
+              mp_.map_min_boundary_.x(), mp_.map_max_boundary_.x(),
+              mp_.map_min_boundary_.y(), mp_.map_max_boundary_.y(),
+              mp_.map_min_boundary_.z(), mp_.map_max_boundary_.z());
+  }
 
   return true;
   }
@@ -1260,4 +1341,14 @@ void GridMap::depthOdomCallback(const sensor_msgs::ImageConstPtr &img,
   int max_y = floor(mp_.map_size_(1) * mp_.resolution_inv_);
   return z * max_x * max_y + y * max_x + x;
   }
+
+  // // 新增定时检查回调函数（仅每秒检查1次是否需要更新）
+  // void GridMap::updateCheckCallback(const ros::TimerEvent& event)
+  // {
+  //   if (!dynamic_map_enable_ || md_.camera_pos_.isZero())
+  //     return;
+
+  //   // 仅在定时回调中调用更新逻辑，避免高频触发
+  //   updateDynamicMapOrigin(md_.camera_pos_);
+  // }
 // GridMap
