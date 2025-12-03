@@ -80,6 +80,9 @@ struct MappingParameters {
 
   /* active mapping */
   double unknown_flag_;
+  
+  double drone_safe_radius_;
+  bool enable_drone_self_filter_; 
 
 };
 

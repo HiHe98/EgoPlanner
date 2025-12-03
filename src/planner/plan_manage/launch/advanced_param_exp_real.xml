@@ -104,6 +104,10 @@
     <param name="grid_map/update_hysteresis" value="2.0" description="滞后量（防止临界波动，默认2m）"/>
     <param name="grid_map/update_freq" value="1.0" description="定时检查频率（默认1Hz，控制更新检查频率）"/>
 
+    <!-- 新增：飞机自身区域过滤开关（true=开启，false=关闭，默认true） -->
+    <param name="grid_map/enable_drone_self_filter" value="true" />
+    <!-- 新增：无人机自身区域过滤半径（根据桨叶直径调整，如 1.5~2.0m） -->
+    <param name="grid_map/drone_safe_radius" value="0.5" />
     <!-- camera parameter -->
     <param name="grid_map/cx" value="$(arg cx)"/>
     <param name="grid_map/cy" value="$(arg cy)"/>

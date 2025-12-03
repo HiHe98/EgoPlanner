@@ -55,6 +55,11 @@ void GridMap::initMap(ros::NodeHandle &nh)
   node_.param("grid_map/update_hysteresis", update_hysteresis_, 2.0);
   node_.param("grid_map/update_freq", update_check_freq_, 1.0);
 
+  // 新增：读取无人机安全半径参数（默认值 0.5m，兼容之前的配置）
+  node_.param("grid_map/drone_safe_radius", mp_.drone_safe_radius_, 0.5);
+  node_.param("grid_map/enable_drone_self_filter", mp_.enable_drone_self_filter_, true);
+
+
   mp_.resolution_inv_ = 1 / mp_.resolution_;
   mp_.map_origin_ = Eigen::Vector3d(-x_size / 2.0, -y_size / 2.0, mp_.ground_height_);
   mp_.map_size_ = Eigen::Vector3d(x_size, y_size, z_size);
@@ -829,7 +834,6 @@ void GridMap::odomCallback(const nav_msgs::OdometryConstPtr &odom)
 
 void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
 {
-
   pcl::PointCloud<pcl::PointXYZ> latest_cloud;
   pcl::fromROSMsg(*img, latest_cloud);
 
@@ -837,7 +841,7 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
 
   if (!md_.has_odom_)
   {
-    std::cout << "no odom!" << std::endl;
+    std::cout << "No odometry data available!" << std::endl;
     return;
   }
 
@@ -866,12 +870,30 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
   max_y = mp_.map_min_boundary_(1);
   max_z = mp_.map_min_boundary_(2);
 
+  const double DRONE_SAFE_RADIUS = mp_.drone_safe_radius_;
+  int filtered_self_cnt = 0;  // 统计自身区域过滤的点数
+
   for (size_t i = 0; i < latest_cloud.points.size(); ++i)
   {
     pt = latest_cloud.points[i];
     p3d(0) = pt.x, p3d(1) = pt.y, p3d(2) = pt.z;
 
-    /* point inside update range */
+    // ======================================
+    // 核心：按开关控制是否执行自身区域过滤
+    // ======================================
+    if (mp_.enable_drone_self_filter_)
+    {
+      // 开启：跳过自身区域的点
+      double dist_to_drone = (p3d - md_.camera_pos_).norm();
+      if (dist_to_drone <= DRONE_SAFE_RADIUS)
+      {
+        filtered_self_cnt++;
+        continue;
+      }
+    }
+    // 关闭：不执行过滤，所有点正常处理
+
+    /* Point inside update range */
     Eigen::Vector3d devi = p3d - md_.camera_pos_;
     Eigen::Vector3i inf_pt;
 
@@ -879,7 +901,7 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
         fabs(devi(2)) < mp_.local_update_range_(2))
     {
 
-      /* inflate the point */
+      /* Inflate the point */
       for (int x = -inf_step; x <= inf_step; ++x)
         for (int y = -inf_step; y <= inf_step; ++y)
           for (int z = -inf_step_z; z <= inf_step_z; ++z)
@@ -924,6 +946,19 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
 
   boundIndex(md_.local_bound_min_);
   boundIndex(md_.local_bound_max_);
+
+  // // 优化日志：明确显示开关状态和过滤统计
+  // ROS_INFO_THROTTLE(1.0,
+  //                   "[GridMap] Raw point cloud processing completed. "
+  //                   "Total points: %zu, "
+  //                   "Filtered self-region points: %d, "
+  //                   "Valid points: %zu "
+  //                   "(self-filter: %s, safe radius: %.2fm)",
+  //                   latest_cloud.points.size(),
+  //                   filtered_self_cnt,
+  //                   latest_cloud.points.size() - filtered_self_cnt,
+  //                   mp_.enable_drone_self_filter_ ? "ON" : "OFF",
+  //                   DRONE_SAFE_RADIUS);
 }
 
 void GridMap::publishMap()
