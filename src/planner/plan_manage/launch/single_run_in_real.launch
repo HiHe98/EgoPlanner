@@ -7,6 +7,14 @@
 
     <!-- topic of your odometry such as VIO or LIO -->
     <arg name="odom_topic" default="/mavros/local_position/odom" />
+
+    <!-- ====================================== -->
+    <!-- 新增：实机场景半径离群点去除参数（适配RPLIDAR S3） -->
+    <!-- ====================================== -->
+    <arg name="radius_search" default="0.20" />  <!-- 实机推荐：RPLIDAR S3点云稍稀疏，放大至0.2m -->
+    <arg name="min_neighbors" default="4" />     <!-- 实机推荐：降低阈值，避免有效点误删 -->
+    <arg name="raw_cloud_topic" default="/points" />  <!-- 激光雷达合并后的原始点云 -->
+    <arg name="filtered_cloud_topic" default="/points_filtered" />  <!-- 过滤后点云 -->
     
     <include file="$(find ego_planner)/launch/rplidar_s3.launch">
     </include>
@@ -17,7 +25,7 @@
     </include> -->
     <node pkg="ira_laser_tools" name="laserscan_multi_merger" type="laserscan_multi_merger" output="screen">
         <param name="destination_frame" value="map"/>
-        <param name="cloud_destination_topic" value="/points"/>
+        <param name="cloud_destination_topic" value="$(arg raw_cloud_topic)"/>  <!-- 改为参数化，方便管理 -->
         <param name="scan_destination_topic" value="/scan_multi"/>
         <param name="laserscan_topics" value ="/scan" /> 
         <param name="angle_min" value="-2.0"/>
@@ -27,6 +35,23 @@
         <param name="range_min" value="0.30"/>
         <param name="range_max" value="50.0"/>
     </node>
+
+    <!-- ====================================== -->
+    <!-- 新增：实机场景 Radius Outlier Removal 节点 -->
+    <!-- 注：放在激光雷达合并节点后，确保原始点云有数据 -->
+    <!-- ====================================== -->
+    <node name="radius_outlier_removal"
+          pkg="nodelet" type="nodelet"
+          args="standalone pcl/RadiusOutlierRemoval"
+          output="screen">
+        <!-- 话题重映射：激光雷达合并后的点云 → 过滤后点云 -->
+        <remap from="~input" to="$(arg raw_cloud_topic)" />
+        <remap from="~output" to="$(arg filtered_cloud_topic)" />
+        <!-- 实机适配参数：RPLIDAR S3点云稀疏，半径稍大、阈值稍低 -->
+        <param name="radius_search" value="$(arg radius_search)"/>
+        <param name="min_neighbors" value="$(arg min_neighbors)"/>
+    </node>
+
   <!-- main algorithm params -->
     <include file="$(find ego_planner)/launch/advanced_param_exp_real.xml">
         <arg name="use_distinctive_trajs" value="true" />
@@ -42,9 +67,8 @@
         <arg name="camera_pose_topic" value="/camera_pose_in_map"/>
         <arg name="depth_topic" value="/roscam/front_cam/depth/image_raw"/>
 
-        <!-- topic of point cloud measurement, such as from LIDAR  -->
-        <!-- don't set camera pose and depth, if you already set this one! -->
-        <arg name="cloud_topic" value="/points"/>
+        <!-- 关键修改：实机场景订阅过滤后的点云 -->
+        <arg name="cloud_topic" value="$(arg filtered_cloud_topic)"/>
 
         <!-- intrinsic params of the depth camera -->
         <arg name="cx" value="319.5"/>
@@ -52,7 +76,7 @@
         <arg name="fx" value="205.5"/>
         <arg name="fy" value="207.0"/>
 
-        <!-- maximum velocity and acceleration the drone will reach -->
+        <!-- maximum velocity and acceleration the drone will reach（实机低速） -->
         <arg name="max_vel" value="1" />
         <arg name="max_acc" value="1.0" />
 

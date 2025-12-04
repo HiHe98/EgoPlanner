@@ -86,9 +86,9 @@
     <param name="fsm/waypoint4_z" value="$(arg point4_z)" type="double"/>
 
     <!-- 动态地图核心配置：固定地图尺寸（无需过大，覆盖无人机周围即可） -->
-    <param name="grid_map/map_size_x" value="30" />  <!-- 固定X轴尺寸 -->
-    <param name="grid_map/map_size_y" value="30" />  <!-- 固定Y轴尺寸 -->
-    <param name="grid_map/map_size_z" value="30" />  <!-- 固定Z轴尺寸 -->
+    <param name="grid_map/map_size_x" value="20" />  <!-- 固定X轴尺寸 -->
+    <param name="grid_map/map_size_y" value="20" />  <!-- 固定Y轴尺寸 -->
+    <param name="grid_map/map_size_z" value="10" />  <!-- 固定Z轴尺寸 -->
     <param name="grid_map/resolution" value="0.1" />   <!-- 10cm体素（平衡精度和内存） -->
     <param name="grid_map/local_update_range_x"  value="8" /> 
     <param name="grid_map/local_update_range_y"  value="8" /> 
@@ -99,10 +99,10 @@
 
     <!-- 动态更新触发参数 -->
     <param name="grid_map/dynamic_map_enable" value="true" description="是否启用动态地图跟随（true=启用，false=禁用）"/>
-    <param name="grid_map/update_threshold" value="5" description="3D偏移触发阈值（默认8m）"/>
-    <param name="grid_map/min_move_dist" value="2" description="最小移动距离（过滤微小抖动，默认3m）"/>
-    <param name="grid_map/update_hysteresis" value="2.0" description="滞后量（防止临界波动，默认2m）"/>
-    <param name="grid_map/update_freq" value="1.0" description="定时检查频率（默认1Hz，控制更新检查频率）"/>
+    <param name="grid_map/update_threshold" value="5" />    <!-- 触发阈值 -->
+    <param name="grid_map/update_hysteresis" value="1" />   <!-- 滞后量（阈值的10%-20%） -->
+    <param name="grid_map/min_move_dist" value="2" />       <!-- 最小移动距离（小于阈值） -->
+    <param name="grid_map/update_freq" value="10" description="定时检查频率（默认1Hz，控制更新检查频率）"/>
 
     <!-- 新增：飞机自身区域过滤开关（true=开启，false=关闭，默认true） -->
     <param name="grid_map/enable_drone_self_filter" value="true" />

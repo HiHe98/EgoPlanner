@@ -9,6 +9,14 @@
     <!-- topic of your odometry such as VIO or LIO -->
     <arg name="odom_topic" default="/visual_slam/odom" />
 
+    <!-- ====================================== -->
+    <!-- 新增：半径离群点去除参数（可按需调整） -->
+    <!-- ====================================== -->
+    <arg name="radius_search" default="0.15" />  <!-- 1.5×地图分辨率（0.1m），推荐值 -->
+    <arg name="min_neighbors" default="5" />     <!-- 最小邻域点数 -->
+    <arg name="raw_cloud_topic" default="/points" />  <!-- 原始点云话题（与原有cloud_topic一致） -->
+    <arg name="filtered_cloud_topic" default="/points_filtered" />  <!-- 过滤后点云话题 -->
+
   <!-- main algorithm params -->
     <include file="$(find ego_planner)/launch/advanced_param_exp.xml">
         <arg name="use_distinctive_trajs" value="true" />
@@ -24,9 +32,8 @@
         <arg name="camera_pose_topic" value="/camera_pose_in_map"/>
         <arg name="depth_topic" value="/roscam/front_cam/depth/image_raw"/>
 
-        <!-- topic of point cloud measurement, such as from LIDAR  -->
-        <!-- don't set camera pose and depth, if you already set this one! -->
-        <arg name="cloud_topic" value="/points"/>
+        <!-- 关键修改：cloud_topic 改为过滤后的点云话题 -->
+        <arg name="cloud_topic" value="$(arg filtered_cloud_topic)"/>
 
         <!-- intrinsic params of the depth camera -->
         <arg name="cx" value="319.5"/>
@@ -35,7 +42,7 @@
         <arg name="fy" value="207.0"/>
 
         <!-- maximum velocity and acceleration the drone will reach -->
-        <arg name="max_vel" value="5" />
+        <arg name="max_vel" value="1" />
         <arg name="max_acc" value="1" />
 
         <!--always set to 1.5 times grater than sensing horizen-->
@@ -45,7 +52,7 @@
         <!-- 2: use global waypoints below  -->
         <arg name="flight_type" value="1" />
         
-        <!-- global waypoints -->ds3e
+        <!-- global waypoints -->
         <!-- It generates a piecewise min-snap traj passing all waypoints -->
         <arg name="point_num" value="5" />
 
@@ -69,6 +76,22 @@
         <arg name="point4_y" value="0.0" />
         <arg name="point4_z" value="1.0" />
     </include>
+
+    <!-- ====================================== -->
+    <!-- 新增：Radius Outlier Removal 节点 -->
+    <!-- ====================================== -->
+    <node name="radius_outlier_removal"
+          pkg="nodelet" type="nodelet"
+          args="standalone pcl/RadiusOutlierRemoval"
+          output="screen">
+        <!-- 话题重映射：原始点云 → 过滤后点云 -->
+        <remap from="~input" to="$(arg raw_cloud_topic)" />
+        <remap from="~output" to="$(arg filtered_cloud_topic)" />
+        <!-- 半径过滤核心参数 -->
+        <param name="radius_search" value="$(arg radius_search)"/>
+        <param name="min_neighbors" value="$(arg min_neighbors)"/>
+    </node>
+
     <!-- trajectory server -->
     <node pkg="ego_planner" name="drone_$(arg drone_id)_traj_server" type="traj_server" output="screen">
         <!-- <remap from="position_cmd" to="/setpoints_cmd"/> -->
@@ -76,5 +99,6 @@
         <param name="traj_server/time_forward" value="1.0" type="double"/>
         <remap from="position_cmd" to="planning/pos_cmd"/>
     </node>
+
     <node name="rviz" pkg="rviz" type="rviz" args="-d $(find gazebo_sim)/launch/ego_planner.rviz" required="true" />
 </launch>
