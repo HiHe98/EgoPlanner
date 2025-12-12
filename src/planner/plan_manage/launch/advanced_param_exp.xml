@@ -166,7 +166,9 @@
     <param name="prediction/lambda" value="1.0" type="double"/>
     <param name="prediction/predict_rate" value="1.0" type="double"/>
   
-  
+    <!-- 新增参数，重规划冷却时间和exectraj最短执行时间 -->
+    <param name="fsm/replan_cooldown" value="0.3" />
+    <param name="fsm/exec_traj_min_exec_time" value="0.1" />
 
 
   </node>

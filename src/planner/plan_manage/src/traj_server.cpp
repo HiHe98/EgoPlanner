@@ -23,13 +23,21 @@ int traj_id_;
 // yaw control
 double last_yaw_, last_yaw_dot_;
 double time_forward_;
-
 void bsplineCallback(ego_planner::BsplineConstPtr msg)
 {
-  // parse pos traj
-
+  //  1. 先做参数有效性校验（避免空数据导致轨迹构造失败，间接引发t_cur异常）
+  if (!msg) {
+    ROS_WARN("[TrajServer] Null Bspline msg received!");
+    receive_traj_ = false;
+    return;
+  }
+  if (msg->pos_pts.empty() || msg->knots.empty()) {
+    ROS_WARN("[TrajServer] Bspline msg has empty pos_pts/knots!");
+    receive_traj_ = false;
+    return;
+  }
+  // parse pos traj（原有逻辑不变）
   Eigen::MatrixXd pos_pts(3, msg->pos_pts.size());
-
   Eigen::VectorXd knots(msg->knots.size());
   for (size_t i = 0; i < msg->knots.size(); ++i)
   {
@@ -43,27 +51,46 @@ void bsplineCallback(ego_planner::BsplineConstPtr msg)
     pos_pts(2, i) = msg->pos_pts[i].z;
   }
 
-  UniformBspline pos_traj(pos_pts, msg->order, 0.1);
-  pos_traj.setKnot(knots);
+  //  2. 删除手动计算ts的逻辑（冗余且冲突！setKnot会覆盖ts，导致时间基准错位）
+  // 直接用FSM传入的knots构造轨迹，确保时间轴与FSM完全一致
+  UniformBspline pos_traj(pos_pts, msg->order, 0.0);  // ts设为0.0，后续用setKnot覆盖
+  pos_traj.setKnot(knots);  // 复用FSM的knots，时间基准100%对齐
 
-  // parse yaw traj
-
+  // parse yaw traj（原有注释保留，如需启用可直接取消注释）
   // Eigen::MatrixXd yaw_pts(msg->yaw_pts.size(), 1);
   // for (int i = 0; i < msg->yaw_pts.size(); ++i) {
   //   yaw_pts(i, 0) = msg->yaw_pts[i];
   // }
+  // UniformBspline yaw_traj(yaw_pts, msg->order, msg->yaw_dt);
 
-  //UniformBspline yaw_traj(yaw_pts, msg->order, msg->yaw_dt);
+  //  3. 校验并修正start_time_（避免未来/过期时间导致t_cur无法增长）
+  ros::Time time_now = ros::Time::now();
+  if (msg->start_time > time_now + ros::Duration(0.1)) {  // 若start_time是未来0.1s以上
+    ROS_WARN("[TrajServer] Future start_time (%.3fs > now %.3fs), correct to now",
+             msg->start_time.toSec(), time_now.toSec());
+    start_time_ = time_now;
+  } else if (msg->start_time < time_now - ros::Duration(2.0)) {  // 若start_time过期2s以上
+    ROS_WARN("[TrajServer] Expired start_time (%.3fs < now %.3fs), correct to now",
+             msg->start_time.toSec(), time_now.toSec());
+    start_time_ = time_now;
+  } else {
+    start_time_ = msg->start_time;  // 正常情况：同步FSM的start_time
+  }
 
-  start_time_ = msg->start_time;
   traj_id_ = msg->traj_id;
 
   traj_.clear();
   traj_.push_back(pos_traj);
-  traj_.push_back(traj_[0].getDerivative());
-  traj_.push_back(traj_[1].getDerivative());
+  traj_.push_back(traj_[0].getDerivative());  // 速度轨迹（一阶导数）
+  traj_.push_back(traj_[1].getDerivative());  // 加速度轨迹（二阶导数）
 
-  traj_duration_ = traj_[0].getTimeSum();
+  //  4. 修正traj_duration_计算（用knots最大值，不受负节点影响，最准确）
+  double max_knot = knots.maxCoeff();
+  traj_duration_ = max_knot;
+
+  //  5. 打印关键参数，验证时间基准是否正确（调试必备）
+  ROS_INFO("[TrajServer] Traj updated: start_time=%.3fs, duration=%.3fs, traj_id=%d",
+           start_time_.toSec(), traj_duration_, traj_id_);
 
   receive_traj_ = true;
 }
@@ -168,6 +195,16 @@ void cmdCallback(const ros::TimerEvent &e)
 
   ros::Time time_now = ros::Time::now();
   double t_cur = (time_now - start_time_).toSec();
+
+    // ========== 新增：t_cur最小为0，避免负时间 ==========
+  t_cur = std::max(t_cur, 0.0);
+
+
+    //  打印t_cur增长情况（验证是否正常）
+  static double last_t_cur = 0.0;
+  // ROS_INFO("[TrajServer] t_cur=%.3fs (增长了%.3fs), duration=%.3fs",
+  //          t_cur, t_cur - last_t_cur, traj_duration_);
+  // last_t_cur = t_cur;
 
   Eigen::Vector3d pos(Eigen::Vector3d::Zero()), vel(Eigen::Vector3d::Zero()), acc(Eigen::Vector3d::Zero()), pos_f;
   std::pair<double, double> yaw_yawdot(0, 0);

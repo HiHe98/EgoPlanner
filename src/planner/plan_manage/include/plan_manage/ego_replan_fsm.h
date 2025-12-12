@@ -109,6 +109,12 @@ namespace ego_planner
     void stopPlanCallback(const std_msgs::Empty::ConstPtr& msg);  // 新增：暂停规划回调函数
     bool finish_flag_ = false;  // 标识是否已处理过"接近目标"分支
 
+    // 新增：声明“上次发布轨迹时间”变量（类成员，全局有效）
+    ros::Time last_traj_publish_time_;
+    // 从 launch 读取的参数（替代局部硬编码）
+    double replan_cooldown_;
+    double exec_traj_min_exec_time_; 
+
 
   public:
     EGOReplanFSM(/* args */)

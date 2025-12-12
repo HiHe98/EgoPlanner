@@ -51,12 +51,12 @@ namespace ego_planner
     cout << "start: " << start_pt.transpose() << ", " << start_vel.transpose() << "\ngoal:" << local_target_pt.transpose() << ", " << local_target_vel.transpose()
          << endl;
 
-    if ((start_pt - local_target_pt).norm() < 0.2)
+    if ((start_pt - local_target_pt).norm() < 1)
     {
         cout << "Close to goal" << endl;
-        close_to_goal = true;   // ① 额外标记
+        close_to_goal = true;   
         continous_failures_count_++;
-        return false;           // ② 保持 false
+        return false;           
     }
 
     ros::Time t_start = ros::Time::now();

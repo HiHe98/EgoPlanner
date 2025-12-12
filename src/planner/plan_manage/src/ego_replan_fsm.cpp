@@ -59,6 +59,36 @@ namespace ego_planner
     }
     else
       cout << "Wrong target_type_ value! target_type_=" << target_type_ << endl;
+  // 读取 replan_cooldown（统一重规划间隔）
+  nh.param("fsm/replan_cooldown", replan_cooldown_, 0.3); // 默认值 0.3s，和原有风格一致
+  // 读取 exec_traj_min_exec_time（轨迹最小执行时间）
+  nh.param("fsm/exec_traj_min_exec_time", exec_traj_min_exec_time_, 0.1); // 默认值 0.1s
+
+  // 初始化阶段的冷却时间计算（使用统一的 replan_cooldown_）
+  ros::Time current_valid_time;
+  if (ros::Time::now().isValid()) {
+    current_valid_time = ros::Time::now();
+    last_traj_publish_time_ = current_valid_time - ros::Duration(replan_cooldown_); // 用统一参数
+    ROS_INFO("[FSM-Init] ROS time is valid! Initialized cooldown time:");
+    ROS_INFO("  - Current time = %.3fs", current_valid_time.toSec());
+    ROS_INFO("  - Last replan time = %.3fs (current time - %.2fs cooldown)", 
+             last_traj_publish_time_.toSec(), replan_cooldown_); // 统一参数
+  } else {
+    current_valid_time = ros::Time(1);
+    last_traj_publish_time_ = current_valid_time;
+    ROS_WARN("[FSM-Init] ROS time NOT synchronized (Gazebo may not be started)! Forced initialization:");
+    ROS_WARN("  - Forced valid time = %.3fs (to avoid time overflow)", current_valid_time.toSec());
+    ROS_WARN("  - Last replan time = %.3fs (will auto-sync after Gazebo starts)", 
+             last_traj_publish_time_.toSec());
+  }
+
+  // 额外防护（保留）
+  if (!last_traj_publish_time_.isValid()) {
+    last_traj_publish_time_ = ros::Time(1);
+    ROS_ERROR("[FSM-Init] Exception protection: Forced cooldown time to minimal valid value = %.3fs", 
+              last_traj_publish_time_.toSec());
+  }
+
   }
 
   void EGOReplanFSM::planGlobalTrajbyGivenWps()
@@ -315,57 +345,76 @@ namespace ego_planner
       break;
     }
 
-    case REPLAN_TRAJ:
-    {
+  case REPLAN_TRAJ:
+  {
+  //  新增：REPLAN_TRAJ状态冷却，避免1s内重复重规划
+  // const double REPLAN_COOLDOWN = 1.0;
+  // ros::Time now = ros::Time::now();
+  // double time_since_last_replan = (now - last_traj_publish_time_).toSec();
 
-      if (planFromCurrentTraj())
-      {
-        changeFSMExecState(EXEC_TRAJ, "FSM");
-      }
-      else
-      {
-        changeFSMExecState(REPLAN_TRAJ, "FSM");
-      }
+  // if (time_since_last_replan < REPLAN_COOLDOWN && now.isValid()) {
+  //   ROS_INFO("[FSM-REPLAN_TRAJ冷却] 间隔=%.3fs < %.2fs，保持REPLAN_TRAJ状态", time_since_last_replan, REPLAN_COOLDOWN);
+  //   return;
+  // }
 
-      break;
+  if (planFromCurrentTraj()) {
+    ROS_INFO("[FSM-REPLAN_TRAJ] REPLAN SUCESS,CHANGE TO EXEC_TRAJ");
+    changeFSMExecState(EXEC_TRAJ, "FSM");
+  } else {
+    ROS_WARN("[FSM-REPLAN_TRAJ] REPLAN FAIL,STILL TRY");
+    changeFSMExecState(REPLAN_TRAJ, "FSM");
+  }
+  break;
+  } 
+
+  case EXEC_TRAJ:
+  {
+  LocalTrajData *info = &planner_manager_->local_data_;
+  ros::Time time_now = ros::Time::now();
+  double t_cur = (time_now - info->start_time_).toSec();
+  t_cur = min(info->duration_, t_cur);
+
+  Eigen::Vector3d pos = info->position_traj_.evaluateDeBoorT(t_cur);
+
+  // 1. 轨迹执行完毕：正常退出（保留）
+  if (t_cur > info->duration_ - 1e-2) {
+    have_target_ = false;
+    changeFSMExecState(WAIT_TARGET, "FSM");
+    ROS_WARN("[EGO] >>>>>  publish finish_event (normal)  <<<<<");
+    std_msgs::Empty e;
+    pub_finish_event.publish(e);
+    ROS_INFO("[EGO] finish_event: traj_complete");
+    return;
+  }
+  // 2. 接近目标/起点：不重规划（保留，日志已英文）
+  else if ((end_pt_ - pos).norm() < no_replan_thresh_) {
+    ROS_DEBUG("[FSM-EXEC_TRAJ] Close to goal (distance=%.3fm), maintain trajectory", (end_pt_ - pos).norm());
+    return;
+  }
+  else if ((info->start_pos_ - pos).norm() < replan_thresh_) {
+    ROS_DEBUG("[FSM-EXEC_TRAJ] Close to trajectory start (distance=%.3fm), maintain trajectory", (info->start_pos_ - pos).norm());
+    return;
+  }
+  // 3. 核心冷却拦截（使用统一的 replan_cooldown_）
+  else {
+    double time_since_last_replan = (time_now - last_traj_publish_time_).toSec();
+
+    // 打印统一参数（明确标注使用的是同一个冷却时间）
+    ROS_INFO_THROTTLE(0.2, "[FSM-EXEC_TRAJ Cooldown] Trajectory execution=%.3fs, Replanning interval=%.3fs, Thresholds (min_exec=%.2fs, cooldown=%.2fs)",
+                  t_cur, time_since_last_replan, exec_traj_min_exec_time_, replan_cooldown_);
+
+    // 双重拦截（仅替换 cooldown 变量名）
+    if (t_cur < exec_traj_min_exec_time_ || (time_since_last_replan < replan_cooldown_ && time_now.isValid())) {
+      ROS_DEBUG("[FSM-EXEC_TRAJ Cooldown] Condition not met (execution=%.3fs < %.2fs OR interval=%.3fs < %.2fs), maintain trajectory",
+            t_cur, exec_traj_min_exec_time_, time_since_last_replan, replan_cooldown_);
+      return;
     }
 
-    case EXEC_TRAJ:
-    {
-      /* determine if need to replan */
-      LocalTrajData *info = &planner_manager_->local_data_;
-      ros::Time time_now = ros::Time::now();
-      double t_cur = (time_now - info->start_time_).toSec();
-      t_cur = min(info->duration_, t_cur);
-
-      Eigen::Vector3d pos = info->position_traj_.evaluateDeBoorT(t_cur);
-
-      /* && (end_pt_ - pos).norm() < 0.5 */
-      if (t_cur > info->duration_ - 1e-2) {
-          have_target_ = false;
-          changeFSMExecState(WAIT_TARGET, "FSM");
-          ROS_WARN("[EGO] >>>>>  publish finish_event (normal)  <<<<<");
-          std_msgs::Empty e;
-          pub_finish_event.publish(e);
-          ROS_INFO("[EGO] finish_event: traj_complete");
-          return;
-      }
-      else if ((end_pt_ - pos).norm() < no_replan_thresh_)
-      {
-        // cout << "near end" << endl;
-        return;
-      }
-      else if ((info->start_pos_ - pos).norm() < replan_thresh_)
-      {
-        // cout << "near start" << endl;
-        return;
-      }
-      else
-      {
-        changeFSMExecState(REPLAN_TRAJ, "FSM");
-      }
-      break;
-    }
+    ROS_INFO("[FSM-EXEC_TRAJ] Replanning condition met, switching to REPLAN_TRAJ");
+    changeFSMExecState(REPLAN_TRAJ, "FSM");
+  }
+  break;
+  }
 
     case EMERGENCY_STOP:
     {
@@ -466,92 +515,101 @@ namespace ego_planner
     }
   }
 
+
   bool EGOReplanFSM::callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj)
-  {
-    // 新增：阻断WAIT_TARGET状态下的规划
-    if (exec_state_ == WAIT_TARGET) {
-        ROS_INFO("[callReboundReplan] Current state is WAIT_TARGET, skip replanning.");
-        return false;
-    }
-    getLocalTarget();
+{
 
-    // 强制局部目标点Z坐标与起点一致
-    double fixed_z = start_pt_.z();
-    local_target_pt_.z() = fixed_z;
-    local_target_vel_.z() = 0.0;
-
-    // 调用局部规划器
-    bool close_reason = false;
-    bool plan_success = planner_manager_->reboundReplan(
-        start_pt_,
-        start_vel_,
-        start_acc_,
-        local_target_pt_,
-        local_target_vel_,
-        (have_new_target_ || flag_use_poly_init),
-        flag_randomPolyTraj,
-        close_reason
-    );
-    have_new_target_ = false;
-
-    cout << "final_plan_success=" << plan_success << endl;
-
-    if (plan_success)
-    {
-      auto info = &planner_manager_->local_data_;
-
-      /* 修正轨迹控制点的Z坐标 */
-      Eigen::MatrixXd pos_pts = info->position_traj_.getControlPoint();
-      for (int i = 0; i < pos_pts.cols(); ++i) {
-        pos_pts(2, i) = fixed_z;
-      }
-
-      // 计算时间间隔ts（替代 getTs()）
-      Eigen::VectorXd knots = info->position_traj_.getKnot();
-      double ts = knots(1) - knots(0); // 均匀B样条的knot间隔相等
-
-      // 重新构造轨迹对象
-      info->position_traj_ = UniformBspline(pos_pts, 3, ts);
-
-      /* 发布轨迹 */
-      ego_planner::Bspline bspline;
-      bspline.order = 3;
-      bspline.start_time = info->start_time_;
-      bspline.traj_id = info->traj_id_;
-
-      bspline.pos_pts.reserve(pos_pts.cols());
-      for (int i = 0; i < pos_pts.cols(); ++i)
-      {
-        geometry_msgs::Point pt;
-        pt.x = pos_pts(0, i);
-        pt.y = pos_pts(1, i);
-        pt.z = pos_pts(2, i);
-        bspline.pos_pts.push_back(pt);
-      }
-
-      bspline.knots.reserve(knots.rows());
-      for (int i = 0; i < knots.rows(); ++i)
-      {
-        bspline.knots.push_back(knots(i));
-      }
-
-      bspline_pub_.publish(bspline);
-
-      visualization_->displayOptimalList(info->position_traj_.getControlPoint(), 0);
-    }
-    else if (close_reason && !finish_flag_)  // 仅当未处理过且close_reason为true时执行
-    {
-        ROS_WARN("[FSM] reboundReplan failed due to CLOSE_TO_GOAL, switching to WAIT_TARGET");
-        // 切换至WAIT_TARGET状态
-        changeFSMExecState(WAIT_TARGET, "接近目标，无需继续规划");
-        // 发布完成事件
-        std_msgs::Empty e;
-        pub_finish_event.publish(e);
-        // 关键：标记为已处理，后续不再进入该分支
-        finish_flag_ = true;
-    }
-    return plan_success;
+  // 正常冷却逻辑（无紧急障碍物时生效）
+  double time_since_last = (ros::Time::now() - last_traj_publish_time_).toSec();
+  const double COOLDOWN = 0.8;  // 你选择的冷却时间
+  if (time_since_last < COOLDOWN) {
+    ROS_INFO("[FSM-CoolDown] Skip replan (%.3fs < %.3fs)", time_since_last, COOLDOWN);
+    return false;
   }
+
+  // 新增：阻断WAIT_TARGET状态下的规划
+  if (exec_state_ == WAIT_TARGET) {
+      ROS_INFO("[callReboundReplan] Current state is WAIT_TARGET, skip replanning.");
+      return false;
+  }
+  getLocalTarget();
+
+  // 强制局部目标点Z坐标与起点一致
+  double fixed_z = start_pt_.z();
+  local_target_pt_.z() = fixed_z;
+  local_target_vel_.z() = 0.0;
+
+  // 调用局部规划器
+  bool close_reason = false;
+  bool plan_success = planner_manager_->reboundReplan(
+      start_pt_,
+      start_vel_,
+      start_acc_,
+      local_target_pt_,
+      local_target_vel_,
+      (have_new_target_ || flag_use_poly_init),
+      flag_randomPolyTraj,
+      close_reason
+  );
+  have_new_target_ = false;
+
+  cout << "final_plan_success=" << plan_success << endl;
+
+  if (plan_success)
+  {
+    auto info = &planner_manager_->local_data_;
+
+    /* 修正轨迹控制点的Z坐标 */
+    Eigen::MatrixXd pos_pts = info->position_traj_.getControlPoint();
+    for (int i = 0; i < pos_pts.cols(); ++i) {
+      pos_pts(2, i) = fixed_z;
+    }
+    // 计算时间间隔ts（替代 getTs()）
+    Eigen::VectorXd knots = info->position_traj_.getKnot();
+    double ts = knots(1) - knots(0); // 均匀B样条的knot间隔相等
+
+    // 重新构造轨迹对象
+    info->position_traj_ = UniformBspline(pos_pts, 3, ts);    
+
+    /* 发布轨迹 */
+    ego_planner::Bspline bspline;
+    bspline.order = 3;
+    bspline.start_time = info->start_time_;
+    bspline.traj_id = info->traj_id_;
+
+    bspline.pos_pts.reserve(pos_pts.cols());
+    for (int i = 0; i < pos_pts.cols(); ++i)
+    {
+      geometry_msgs::Point pt;
+      pt.x = pos_pts(0, i);
+      pt.y = pos_pts(1, i);
+      pt.z = pos_pts(2, i);
+      bspline.pos_pts.push_back(pt);
+    }
+
+    bspline.knots.reserve(knots.rows());
+    for (int i = 0; i < knots.rows(); ++i)
+    {
+      bspline.knots.push_back(knots(i));
+    }
+
+    bspline_pub_.publish(bspline);
+
+    visualization_->displayOptimalList(info->position_traj_.getControlPoint(), 0);
+  }
+  else if (close_reason && !finish_flag_)  // 仅当未处理过且close_reason为true时执行
+  {
+      ROS_WARN("[FSM] reboundReplan failed due to CLOSE_TO_GOAL, switching to WAIT_TARGET");
+      // 切换至WAIT_TARGET状态
+      changeFSMExecState(WAIT_TARGET, "接近目标，无需继续规划");
+      // 发布完成事件
+      std_msgs::Empty e;
+      pub_finish_event.publish(e);
+      // 关键：标记为已处理，后续不再进入该分支
+      finish_flag_ = true;
+  }
+  return plan_success;
+}
 
   bool EGOReplanFSM::callEmergencyStop(Eigen::Vector3d stop_pos)
   {
