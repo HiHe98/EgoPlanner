@@ -50,4 +50,25 @@
         <param name="angle_compensate"    type="bool"   value="$(arg rplidar_angle_compensate)"/>
         <param name="scan_frequency"      type="double" value="$(arg rplidar_scan_frequency)"/>
     </node>
+
+    <!-- ====================================== -->
+     <!-- 4. 点云合并节点（核心：ira_laser_tools） -->
+     <!-- 功能：将激光雷达的 /scan 话题转换为点云 /points -->
+     <!-- ====================================== -->
+     <node pkg="ira_laser_tools" 
+          name="laserscan_multi_merger"  
+          type="laserscan_multi_merger"  
+          output="screen">  <!-- 输出日志到终端，方便排查 -->
+     <!-- 引用上面定义的点云合并参数 -->
+     <param name="destination_frame"    value="$(arg destination_frame)"/>
+     <param name="cloud_destination_topic" value="$(arg raw_cloud_topic)"/>
+     <param name="scan_destination_topic"  value="$(arg scan_destination_topic)"/>
+     <param name="laserscan_topics"     value="$(arg laserscan_topics)" />
+     <param name="angle_min"            value="$(arg angle_min)"/>
+     <param name="angle_max"            value="$(arg angle_max)"/>
+     <param name="angle_increment"      value="$(arg angle_increment)"/>
+     <param name="scan_time"            value="$(arg scan_time)"/>
+     <param name="range_min"            value="$(arg range_min)"/>
+     <param name="range_max"            value="$(arg range_max)"/>
+     </node>
 </launch>
