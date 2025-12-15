@@ -1,0 +1,53 @@
+<!-- ego_planner/launch/rplidar_laserscan_merger.launch -->
+<launch>
+    <!-- ====================================== -->
+    <!-- 1. 激光雷达（RPLIDAR S3）配置参数（支持外部传入） -->
+    <!-- ====================================== -->
+    <arg name="rplidar_serial_port" default="/dev/ttyS7" 
+         doc="RPLIDAR S3 串口设备（实机需根据实际串口修改）"/>
+    <arg name="rplidar_baudrate" default="1000000" 
+         doc="RPLIDAR S3 波特率（固定 1000000 对应 S3 型号）"/>
+    <arg name="rplidar_frame_id" default="lidar_link" 
+         doc="激光雷达坐标系（需与无人机底座坐标系一致）"/>
+    <arg name="rplidar_inverted" default="false" 
+         doc="是否反转扫描方向（默认 false）"/>
+    <arg name="rplidar_angle_compensate" default="true" 
+         doc="是否启用角度补偿（默认 true，提升扫描精度）"/>
+    <arg name="rplidar_scan_frequency" default="10.0" 
+         doc="扫描频率（Hz，S3 支持 5/10/20Hz，实机推荐 10Hz）"/>
+
+    <!-- ====================================== -->
+    <!-- 2. 点云合并节点 配置参数（支持外部传入） -->
+    <!-- ====================================== -->
+    <arg name="destination_frame" default="map" 
+         doc="点云合并后的目标坐标系（与无人机世界坐标系一致）"/>
+    <arg name="raw_cloud_topic" default="/points" 
+         doc="合并后的原始点云话题（供后续离群点过滤使用）"/>
+    <arg name="scan_destination_topic" default="/scan_multi" 
+         doc="合并后的激光扫描话题"/>
+    <arg name="laserscan_topics" default="/scan" 
+         doc="需要合并的激光扫描话题（RPLIDAR S3 默认发布 /scan）"/>
+    
+    <!-- 激光扫描参数（适配 RPLIDAR S3 性能） -->
+    <arg name="angle_min" default="-2.0" doc="最小扫描角度（弧度，对应约 -114.6°）"/>
+    <arg name="angle_max" default="2.0" doc="最大扫描角度（弧度，对应约 114.6°）"/>
+    <arg name="angle_increment" default="0.0058" doc="角度分辨率（弧度，约 0.333°）"/>
+    <arg name="scan_time" default="0.0333333" doc="扫描周期（秒，对应 30Hz 发布频率）"/>
+    <arg name="range_min" default="0.30" doc="最小探测距离（米，S3 最小支持 0.15m，实机留余量）"/>
+    <arg name="range_max" default="50.0" doc="最大探测距离（米，S3 最大支持 50m）"/>
+
+    <!-- ====================================== -->
+    <!-- 3. 启动 RPLIDAR S3 激光雷达节点 -->
+    <!-- ====================================== -->
+    <node name="rplidarNode" 
+          pkg="rplidar_ros" 
+          type="rplidarNode" 
+          output="screen">
+        <param name="serial_port"         type="string" value="$(arg rplidar_serial_port)"/>
+        <param name="serial_baudrate"     type="int"    value="$(arg rplidar_baudrate)"/>
+        <param name="frame_id"            type="string" value="$(arg rplidar_frame_id)"/>
+        <param name="inverted"            type="bool"   value="$(arg rplidar_inverted)"/>
+        <param name="angle_compensate"    type="bool"   value="$(arg rplidar_angle_compensate)"/>
+        <param name="scan_frequency"      type="double" value="$(arg rplidar_scan_frequency)"/>
+    </node>
+</launch>

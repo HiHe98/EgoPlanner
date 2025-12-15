@@ -16,25 +16,8 @@
     <arg name="raw_cloud_topic" default="/points" />  <!-- 激光雷达合并后的原始点云 -->
     <arg name="filtered_cloud_topic" default="/points_filtered" />  <!-- 过滤后点云 -->
     
-    <include file="$(find ego_planner)/launch/rplidar_s3.launch">
+    <include file="$(find ego_planner)/launch/rplidar_laserscan_merger.launch">
     </include>
-    <!-- <include file="$(find gazebo_sim)/launch/apm.launch">
-        <arg name="fcu_url" value="/dev/ttyS5:115200"/>
-    </include> -->
-    <!-- <include file="$(find mavproxy_ros)/launch/onclick_run.launch">
-    </include> -->
-    <node pkg="ira_laser_tools" name="laserscan_multi_merger" type="laserscan_multi_merger" output="screen">
-        <param name="destination_frame" value="map"/>
-        <param name="cloud_destination_topic" value="$(arg raw_cloud_topic)"/>  <!-- 改为参数化，方便管理 -->
-        <param name="scan_destination_topic" value="/scan_multi"/>
-        <param name="laserscan_topics" value ="/scan" /> 
-        <param name="angle_min" value="-2.0"/>
-        <param name="angle_max" value="2.0"/>
-        <param name="angle_increment" value="0.0058"/>
-        <param name="scan_time" value="0.0333333"/>
-        <param name="range_min" value="0.30"/>
-        <param name="range_max" value="50.0"/>
-    </node>
 
     <!-- ====================================== -->
     <!-- 新增：实机场景 Radius Outlier Removal 节点 -->
