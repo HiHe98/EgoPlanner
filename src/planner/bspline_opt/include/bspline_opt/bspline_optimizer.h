@@ -110,7 +110,7 @@ namespace ego_planner
     /* optimization parameters */
     int order_;                    // bspline degree
     double lambda1_;               // jerk smoothness weight
-    double lambda2_, new_lambda2_; // distance weight
+    double lambda2_,new_lambda2_; // distance weight
     double lambda3_;               // feasibility weight
     double lambda4_;               // curve fitting
 
@@ -149,7 +149,9 @@ namespace ego_planner
     bool refine_optimize();
     void combineCostRebound(const double *x, double *grad, double &f_combine, const int n);
     void combineCostRefine(const double *x, double *grad, double &f_combine, const int n);
-
+    
+    double lambda_buffer_;  // 新增：缓冲栅格代价权重
+    double buffer_clearance_;  // 新增：缓冲栅格安全距离（默认0.1m，即1个栅格）
     /* for benckmark evaluation only */
   public:
     typedef unique_ptr<BsplineOptimizer> Ptr;

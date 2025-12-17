@@ -58,7 +58,8 @@ void GridMap::initMap(ros::NodeHandle &nh)
   // 新增：读取无人机安全半径参数（默认值 0.5m，兼容之前的配置）
   node_.param("grid_map/drone_safe_radius", mp_.drone_safe_radius_, 0.5);
   node_.param("grid_map/enable_drone_self_filter", mp_.enable_drone_self_filter_, true);
-
+  // 新增：读取缓冲栅格参数（默认1个栅格）
+  node_.param("grid_map/safe_grid_offset", safe_grid_offset_, 1);
 
   mp_.resolution_inv_ = 1 / mp_.resolution_;
   mp_.map_origin_ = Eigen::Vector3d(-x_size / 2.0, -y_size / 2.0, mp_.ground_height_);
@@ -928,6 +929,27 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &img)
 
             md_.occupancy_buffer_inflate_[idx_inf] = 1;
           }
+
+    // ========== 新增：缓冲栅格标记循环（核心） ==========
+    int buffer_step = inf_step + safe_grid_offset_;  // 原有膨胀+缓冲栅格数
+    int buffer_step_z = inf_step_z + safe_grid_offset_;  // z轴同步缓冲
+    for (int x = -buffer_step; x <= buffer_step; ++x)
+      for (int y = -buffer_step; y <= buffer_step; ++y)
+        for (int z = -buffer_step_z; z <= buffer_step_z; ++z)
+        {
+          p3d_inf(0) = pt.x + x * mp_.resolution_;
+          p3d_inf(1) = pt.y + y * mp_.resolution_;
+          p3d_inf(2) = pt.z + z * mp_.resolution_;
+
+          posToIndex(p3d_inf, inf_pt);
+          if (!isInMap(inf_pt)) continue;
+
+          int idx_inf = toAddress(inf_pt);
+          // 仅标记「非障碍物栅格」为缓冲栅格（值=2，区别于障碍物1）
+          if (md_.occupancy_buffer_inflate_[idx_inf] != 1) {
+            md_.occupancy_buffer_inflate_[idx_inf] = 2;
+          }
+        }
     }
   }
 
@@ -1009,12 +1031,12 @@ void GridMap::publishMap()
 
 void GridMap::publishMapInflate(bool all_info)
 {
-
   if (map_inf_pub_.getNumSubscribers() <= 0)
     return;
 
-  pcl::PointXYZ pt;
-  pcl::PointCloud<pcl::PointXYZ> cloud;
+  // 关键修改1：点云类型改为 PointXYZI（X/Y/Z + Intensity 强度值）
+  pcl::PointXYZI pt;
+  pcl::PointCloud<pcl::PointXYZI> cloud;
 
   Eigen::Vector3i min_cut = md_.local_bound_min_;
   Eigen::Vector3i max_cut = md_.local_bound_max_;
@@ -1033,7 +1055,8 @@ void GridMap::publishMapInflate(bool all_info)
     for (int y = min_cut(1); y <= max_cut(1); ++y)
       for (int z = min_cut(2); z <= max_cut(2); ++z)
       {
-        if (md_.occupancy_buffer_inflate_[toAddress(x, y, z)] == 0)
+        double grid_val = md_.occupancy_buffer_inflate_[toAddress(x, y, z)];
+        if (grid_val == 0)  // 安全栅格，跳过不发布
           continue;
 
         Eigen::Vector3d pos;
@@ -1041,6 +1064,21 @@ void GridMap::publishMapInflate(bool all_info)
         if (pos(2) > mp_.visualization_truncate_height_)
           continue;
 
+        // 关键修改2：用 Intensity 字段标记栅格类型（0~255，值越大概率越高/类型不同）
+        if (grid_val == 1.0)  // 原始障碍物栅格 → 强度值设为 255（最高）
+        {
+          pt.intensity = 255.0;
+        }
+        else if (grid_val == 2.0)  // 膨胀/缓冲栅格 → 强度值设为 128（中等）
+        {
+          pt.intensity = 128.0;
+        }
+        else  // 备用类型（扩展用）→ 强度值设为 64
+        {
+          pt.intensity = 64.0;
+        }
+
+        // 赋值坐标（与原逻辑一致）
         pt.x = pos(0);
         pt.y = pos(1);
         pt.z = pos(2);
@@ -1053,10 +1091,12 @@ void GridMap::publishMapInflate(bool all_info)
   cloud.header.frame_id = mp_.frame_id_;
   sensor_msgs::PointCloud2 cloud_msg;
 
+  // 关键修改3：PointXYZI 转 ROS 消息（自动兼容 PointCloud2）
   pcl::toROSMsg(cloud, cloud_msg);
   map_inf_pub_.publish(cloud_msg);
 
-  // ROS_INFO("pub map");
+  // 可选：打印点云数量和强度分布日志
+  // ROS_INFO("pub colored map: %ld points (obs=255, buffer=128)", cloud.points.size());
 }
 
 void GridMap::publishUnknown()
@@ -1375,6 +1415,22 @@ void GridMap::depthOdomCallback(const sensor_msgs::ImageConstPtr &img,
   int max_x = floor(mp_.map_size_(0) * mp_.resolution_inv_);
   int max_y = floor(mp_.map_size_(1) * mp_.resolution_inv_);
   return z * max_x * max_y + y * max_x + x;
+  }
+
+  double GridMap::getInflateGridValue(const Eigen::Vector3d& pos) {
+  Eigen::Vector3i grid_idx;
+  
+  // 关键修改：将 mp_.origin_ → mp_.map_origin_（匹配你的 MappingParameters 结构体成员名）
+  posToIndex(pos, grid_idx, mp_.map_origin_);
+  
+  // 检查栅格索引是否在地图有效范围内
+  if (!isInMap(grid_idx)) {
+    return 0.0;  // 超出地图范围→返回安全值0.0
+  }
+
+  // 索引有效：转换为数组地址，返回缓冲栅格原始值
+  int idx = toAddress(grid_idx);
+  return md_.occupancy_buffer_inflate_[idx];  // 0.0=安全，1.0=障碍物，2.0=缓冲
   }
 
   // // 新增定时检查回调函数（仅每秒检查1次是否需要更新）

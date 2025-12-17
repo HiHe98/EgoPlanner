@@ -93,7 +93,7 @@
     <param name="grid_map/local_update_range_x"  value="8" /> 
     <param name="grid_map/local_update_range_y"  value="8" /> 
     <param name="grid_map/local_update_range_z"  value="4.5" /> 
-    <param name="grid_map/obstacles_inflation"     value="1" /> 
+    <param name="grid_map/obstacles_inflation"     value="2" /> 
     <param name="grid_map/local_map_margin" value="1.5"/>
     <param name="grid_map/ground_height"        value="-0.01"/>
 
@@ -169,6 +169,12 @@
     <param name="fsm/replan_cooldown" value="0.3" />
     <param name="fsm/exec_traj_min_exec_time" value="0.1" />
 
+        <!-- 缓冲栅格代价权重（引导远离的强度，默认5.0，范围1.0~15.0） -->
+    <param name="optimization/lambda_buffer" value="3" type="double"/>
+    <!-- 缓冲栅格安全距离（默认0.1m，与栅格大小一致） -->
+    <param name="optimization/buffer_clearance" value="0.1" type="double"/>
+    <!-- 栅格级安全偏移：额外远离障碍物的栅格数（1个=0.1m，2个=0.2m） -->
+    <param name="grid_map/safe_grid_offset" value="2" type="int"/>
 
   </node>
 

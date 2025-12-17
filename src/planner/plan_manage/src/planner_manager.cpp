@@ -51,7 +51,7 @@ namespace ego_planner
     cout << "start: " << start_pt.transpose() << ", " << start_vel.transpose() << "\ngoal:" << local_target_pt.transpose() << ", " << local_target_vel.transpose()
          << endl;
 
-    if ((start_pt - local_target_pt).norm() < 1)
+    if ((start_pt - local_target_pt).norm() < 1.5)
     {
         cout << "Close to goal" << endl;
         close_to_goal = true;   

@@ -158,7 +158,7 @@ public:
   inline void setOccupied(Eigen::Vector3d pos);
   inline int getOccupancy(Eigen::Vector3d pos);
   inline int getOccupancy(Eigen::Vector3i id);
-  inline int getInflateOccupancy(Eigen::Vector3d pos);
+  inline bool getInflateOccupancy(const Eigen::Vector3d& pos);  // 声明：const Eigen::Vector3d&
 
   inline void boundIndex(Eigen::Vector3i& id);
   inline bool isUnknown(const Eigen::Vector3i& id);
@@ -209,6 +209,8 @@ public:
 
   // 新增：计算旧地图体素地址
   int oldToAddress(int x, int y, int z);
+
+  double getInflateGridValue(const Eigen::Vector3d& pos);
 
 private:
   MappingParameters mp_;
@@ -272,6 +274,7 @@ private:
   uniform_real_distribution<double> rand_noise_;
   normal_distribution<double> rand_noise2_;
   default_random_engine eng_;
+  int safe_grid_offset_;  // 新增：缓冲栅格数量（从参数读取）
 };
 
 /* ============================== definition of inline function
@@ -356,13 +359,11 @@ inline int GridMap::getOccupancy(Eigen::Vector3d pos) {
   return md_.occupancy_buffer_[toAddress(id)] > mp_.min_occupancy_log_ ? 1 : 0;
 }
 
-inline int GridMap::getInflateOccupancy(Eigen::Vector3d pos) {
-  if (!isInMap(pos)) return -1;
-
-  Eigen::Vector3i id;
-  posToIndex(pos, id);
-
-  return int(md_.occupancy_buffer_inflate_[toAddress(id)]);
+inline bool GridMap::getInflateOccupancy(const Eigen::Vector3d& pos) {
+  // 现在能直接调用类内的 getInflateGridValue（成员函数）
+  double grid_val = getInflateGridValue(pos);
+  // 仅真实障碍物（1.0）返回 true，缓冲（2.0）/安全（0.0）返回 false
+  return (grid_val == 1.0);
 }
 
 inline int GridMap::getOccupancy(Eigen::Vector3i id) {

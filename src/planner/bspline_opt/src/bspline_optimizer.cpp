@@ -17,6 +17,11 @@ namespace ego_planner
     nh.param("optimization/max_acc", max_acc_, -1.0);
 
     nh.param("optimization/order", order_, 3);
+
+    // 原有参数读取...
+    // 新增：缓冲栅格参数（默认权重5.0，安全距离0.1m）
+    nh.param("optimization/lambda_buffer", lambda_buffer_, 5.0);
+    nh.param("optimization/buffer_clearance", buffer_clearance_, 0.1);
   }
 
   void BsplineOptimizer::setEnvironment(const GridMap::Ptr &env)
@@ -339,46 +344,108 @@ namespace ego_planner
     return cost;
   }
 
-  void BsplineOptimizer::calcDistanceCostRebound(const Eigen::MatrixXd &q, double &cost,
-                                                 Eigen::MatrixXd &gradient, int iter_num, double smoothness_cost)
+void BsplineOptimizer::calcDistanceCostRebound(const Eigen::MatrixXd &q, double &cost,
+                                               Eigen::MatrixXd &gradient, int iter_num, double smoothness_cost)
+{
+  cost = 0.0;
+  int end_idx = q.cols() - order_;
+  double demarcation = cps_.clearance;
+  double a = 3 * demarcation, b = -3 * pow(demarcation, 2), c = pow(demarcation, 3);
+
+  force_stop_type_ = DONT_STOP;
+  if (iter_num > 3 && smoothness_cost / (cps_.size - 2 * order_) < 0.1)
   {
-    cost = 0.0;
-    int end_idx = q.cols() - order_;
-    double demarcation = cps_.clearance;
-    double a = 3 * demarcation, b = -3 * pow(demarcation, 2), c = pow(demarcation, 3);
+    check_collision_and_rebound();
+  }
 
-    force_stop_type_ = DONT_STOP;
-    if (iter_num > 3 && smoothness_cost / (cps_.size - 2 * order_) < 0.1) // 0.1 is an experimental value that indicates the trajectory is smooth enough.
+  /*** 原有：障碍物距离代价（保持不变） ***/
+  for (auto i = order_; i < end_idx; ++i)
+  {
+    for (size_t j = 0; j < cps_.direction[i].size(); ++j)
     {
-      check_collision_and_rebound();
-    }
+      double dist = (cps_.points.col(i) - cps_.base_point[i][j]).dot(cps_.direction[i][j]);
+      double dist_err = cps_.clearance - dist;
+      Eigen::Vector3d dist_grad = cps_.direction[i][j];
 
-    /*** calculate distance cost and gradient ***/
-    for (auto i = order_; i < end_idx; ++i)
-    {
-      for (size_t j = 0; j < cps_.direction[i].size(); ++j)
+      if (dist_err < 0)
+      { /* do nothing */ }
+      else if (dist_err < demarcation)
       {
-        double dist = (cps_.points.col(i) - cps_.base_point[i][j]).dot(cps_.direction[i][j]);
-        double dist_err = cps_.clearance - dist;
-        Eigen::Vector3d dist_grad = cps_.direction[i][j];
+        cost += pow(dist_err, 3);
+        gradient.col(i) += -3.0 * dist_err * dist_err * dist_grad;
+      }
+      else
+      {
+        cost += a * dist_err * dist_err + b * dist_err + c;
+        gradient.col(i) += -(2.0 * a * dist_err + b) * dist_grad;
+      }
+    }
+  }
+
+const int BUFFER_GRID_RANGE = 3;
+double buffer_clearance = buffer_clearance_;  // 安全距离（例：0.1m）
+double buffer_demarcation = 0.5 * buffer_clearance;  // 分界值（例：0.05m）
+// 二次方惩罚系数（中等距离用，平缓）
+double buffer_a = 3 * buffer_demarcation;
+double buffer_b = -3 * pow(buffer_demarcation, 2);
+double buffer_c = pow(buffer_demarcation, 3);
+
+for (auto i = order_; i < end_idx; ++i)
+{
+  Eigen::Vector3d ctrl_pt = cps_.points.col(i);
+  Eigen::Vector3i ctrl_grid;
+  grid_map_->posToIndex(ctrl_pt, ctrl_grid);
+
+  for (int dx = -BUFFER_GRID_RANGE; dx <= BUFFER_GRID_RANGE; ++dx)
+  {
+    for (int dy = -BUFFER_GRID_RANGE; dy <= BUFFER_GRID_RANGE; ++dy)
+    {
+      for (int dz = -BUFFER_GRID_RANGE; dz <= BUFFER_GRID_RANGE; ++dz)
+      {
+        // 关键1：先声明并计算 grid_idx（之前遗漏了这行，导致 grid_idx 未声明）
+        Eigen::Vector3i grid_idx = ctrl_grid + Eigen::Vector3i(dx, dy, dz);
+        
+        // 检查栅格是否在地图内（原有逻辑，保持不变）
+        if (!grid_map_->isInMap(grid_idx)) continue;
+
+        // 关键2：只声明一次 grid_center（删除重复的声明）
+        Eigen::Vector3d grid_center;
+        // 用已声明的 grid_idx 计算栅格中心坐标（现在 grid_idx 已定义，无报错）
+        grid_map_->indexToPos(grid_idx, grid_center);
+
+        // 调用公共接口获取栅格值（之前修复的访问私有成员问题，保持不变）
+        double grid_val = grid_map_->getInflateGridValue(grid_center);
+
+        // 仅处理缓冲栅格（2.0），原有逻辑不变
+        if (grid_val != 2.0) continue;
+
+        // 后续计算 dist、dist_err、代价等逻辑（保持不变）
+        double dist = (ctrl_pt - grid_center).norm();
+        double dist_err = buffer_clearance - dist;
 
         if (dist_err < 0)
-        {
-          /* do nothing */
+        { 
+          /* 安全距离外（dist>0.1m）：无代价 */ 
         }
-        else if (dist_err < demarcation)
-        {
-          cost += pow(dist_err, 3);
-          gradient.col(i) += -3.0 * dist_err * dist_err * dist_grad;
+        else if (dist_err < buffer_demarcation)
+        { 
+          // 中等距离（dist=0.05m ~ 0.1m）：二次方惩罚（平缓引导，避免急拐）
+          cost += lambda_buffer_ * (buffer_a * dist_err * dist_err + buffer_b * dist_err + buffer_c);
+          Eigen::Vector3d grad_dir = (ctrl_pt - grid_center).normalized();
+          gradient.col(i) += lambda_buffer_ * (-(2.0 * buffer_a * dist_err + buffer_b) * grad_dir);
         }
         else
-        {
-          cost += a * dist_err * dist_err + b * dist_err + c;
-          gradient.col(i) += -(2.0 * a * dist_err + b) * dist_grad;
+        { 
+          // 超近距离（dist≤0.05m）：三次方惩罚（强惩罚，强制快速远离）
+          cost += lambda_buffer_ * pow(dist_err, 3);
+          Eigen::Vector3d grad_dir = (ctrl_pt - grid_center).normalized();
+          gradient.col(i) += lambda_buffer_ * (-3.0 * dist_err * dist_err * grad_dir);
         }
       }
     }
   }
+}
+}
 
   void BsplineOptimizer::calcFitnessCost(const Eigen::MatrixXd &q, double &cost, Eigen::MatrixXd &gradient)
   {
